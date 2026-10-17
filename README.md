@@ -1,7 +1,8 @@
 # Orion starter: PM + browser
 
-Private distribution candidate 0.1.0-rc.2, prepared for review. The component
-releases are public; this assembled candidate has not been published.
+Public prerelease 0.1.0-rc.2, combining the public PM and browser components.
+The downloadable archive preserves the exact preparation snapshot and validation
+receipt approved for this prerelease.
 
 Give two cooperating local agents one shared task and a browser they can lease.
 The first profile is a version manifest, reproducible dependency locks, public

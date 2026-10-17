@@ -2,7 +2,7 @@
   "schema_version": 1,
   "distribution": "orion-starter",
   "version": "0.1.0-rc.2",
-  "status": "private candidate; publication not approved",
+  "status": "public prerelease",
   "profile": "PM + browser",
   "components": [
     {
