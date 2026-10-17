@@ -1,0 +1,8 @@
+{
+  "name": "orion-starter-browser-driver",
+  "private": true,
+  "version": "0.1.0",
+  "dependencies": {
+    "agent-browser": "0.25.4"
+  }
+}

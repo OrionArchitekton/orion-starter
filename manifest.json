@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "distribution": "orion-starter",
+  "version": "0.1.0-rc.2",
+  "status": "private candidate; publication not approved",
+  "profile": "PM + browser",
+  "components": [
+    {
+      "name": "orion-pm",
+      "version": "0.1.1",
+      "url": "https://github.com/OrionArchitekton/orion-pm-oss/releases/download/v0.1.1/orion_pm-0.1.1-py3-none-any.whl",
+      "sha256": "54f28272550054c32958c67fd84094b825bb387f91ad3efe3b342d463b9c16c7",
+      "license": "MIT"
+    },
+    {
+      "name": "orion-browser",
+      "version": "0.1.0",
+      "url": "https://github.com/OrionArchitekton/orion-browser-oss/releases/download/v0.1.0/orion_browser-0.1.0-py3-none-any.whl",
+      "sha256": "ba793c5271dc7f1909f88823be88195b84f43fbbf58e5e9cd39c5efb085a746a",
+      "license": "MIT"
+    }
+  ],
+  "navigation_client": {
+    "name": "agent-browser",
+    "version": "0.25.4",
+    "npm_lock_sha256": "72628cdcdd2d64c8cc5abe8a0fc6625b4447f12374e61f51b17654ba8ad65264"
+  },
+  "python_lock_sha256": "defb94ad874c7f0ba6d0bc302aeca1b76ea4a7eef99c9faa184b823820e01449",
+  "tested_environment": {
+    "python": "3.11",
+    "os": "WSL2 Linux",
+    "architecture": "x86_64",
+    "filesystem": "ext4"
+  },
+  "pm_contract": {
+    "api_version": 1,
+    "store_format": 1
+  },
+  "examples": [
+    {
+      "path": "examples/browser_starter.py",
+      "sha256": "af5791b34efea3fd55f3ee885f9ab9aba8fe60e5decb5e35ab1be54e5dc45d93",
+      "origin": "Public PM v0.1.1 source archive"
+    },
+    {
+      "path": "examples/cli_consumer.py",
+      "sha256": "198a4415b7a8c8e0ad792fea0ff4716d10f75e71b8ce86a38ad273303a18fa8d",
+      "origin": "Public PM v0.1.1 source archive"
+    }
+  ],
+  "optional_profiles": {
+    "phone": "Not included; separate private release candidate",
+    "remote_hands": "Not included; active independent development"
+  },
+  "bootstrap": {
+    "path": "bootstrap-requirements.txt",
+    "sha256": "4aed17ced2b8225bf1957cbc2fc7b056bf14ef0906aa5a09ad5c75ee5f6467ca",
+    "pip": "26.2",
+    "setuptools": "84.0.0"
+  }
+}

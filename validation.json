@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "pm_version": "0.1.1",
+  "browser_version": "0.1.0",
+  "navigation_client": "agent-browser 0.25.4",
+  "starter_processes": 2,
+  "winner_count": 1,
+  "loser_browser_calls": 0,
+  "observed_title": "Example Domain",
+  "task_status": "done",
+  "claim_state": "absent",
+  "cleanup": {
+    "native_stop": "clean",
+    "browser_down": true,
+    "holder_absent": true,
+    "endpoint_closed": true,
+    "profile_process_absent": true,
+    "synthetic_profile_removed": true
+  },
+  "scope": "Synthetic anonymous page read on WSL2/Linux; no account actions or phone compatibility claim",
+  "installed_pm_conformance_tests": 32,
+  "walkthrough_bash_blocks": 6,
+  "walkthrough_readme_sha256": "73e18ac5d87924d2072958dc721b17dfaedecce4ddafdfa3aa89bbfc87defb27",
+  "observed_utc": "2026-10-17T20:32:47.645902+00:00",
+  "distribution_version": "0.1.0-rc.2",
+  "bootstrap_lock_sha256": "4aed17ced2b8225bf1957cbc2fc7b056bf14ef0906aa5a09ad5c75ee5f6467ca",
+  "bootstrap": {
+    "pip": "26.2",
+    "setuptools": "84.0.0"
+  },
+  "dependency_audit": {
+    "python_vulnerabilities": 0,
+    "npm_vulnerabilities": 0
+  }
+}
