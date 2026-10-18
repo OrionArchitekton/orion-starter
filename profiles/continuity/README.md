@@ -38,13 +38,16 @@ export DEMO_SCREEN=84
 .venv/bin/python - <<'PY'
 from pathlib import Path
 import hashlib, json, os, socket, subprocess, uuid
+def check(condition, reason):
+    if not condition:
+        raise SystemExit(reason)
 root = Path(os.environ['DEMO_ROOT']).resolve()
-assert root.is_dir() and not list(root.iterdir())
-assert not any(k.startswith(('ORION_BROWSER_', 'AGENT_BROWSER_')) for k in os.environ)
+check(root.is_dir() and not list(root.iterdir()), 'workspace_not_empty')
+check(not any(k.startswith(('ORION_BROWSER_', 'AGENT_BROWSER_')) for k in os.environ), 'inherited_browser_override')
 screen = int(os.environ['DEMO_SCREEN'])
-assert 10 <= screen <= 99
-assert not Path(f'/tmp/.X{screen}-lock').exists()
-assert not Path(f'/tmp/.X11-unix/X{screen}').exists()
+check(10 <= screen <= 99, 'screen_range')
+check(not Path(f'/tmp/.X{screen}-lock').exists(), 'screen_lock_exists')
+check(not Path(f'/tmp/.X11-unix/X{screen}').exists(), 'screen_socket_exists')
 for port in (5900 + screen, 6080 + screen):
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', port))
@@ -56,7 +59,7 @@ def save(path, value):
 def call(argv):
     result = subprocess.run(list(map(str, argv)), check=True, capture_output=True, text=True)
     value = json.loads(result.stdout)
-    assert value['ok'] is True
+    check(value['ok'] is True, 'component_setup_refused')
     return value['data']
 save(root / 'projects.json', {'schema_version': 1, 'projects': [{'id': 'sample'}]})
 pm = [binary / 'orion-pm', '--json', '--home', root / 'pm']

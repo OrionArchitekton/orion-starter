@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -100,6 +101,29 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(result['state'], 'inspected')
         self.assertEqual(result['run_id'], self.value['run_id'])
         self.assertEqual(self.snapshot(), before)
+
+    def test_documented_setup_guards_survive_optimized_python(self):
+        recipe = (ROOT / 'profiles/continuity/README.md').read_text()
+        setup = re.search(r"<<'PY'\n(.*?)\nPY", recipe, re.S).group(1)
+        candidate = self.root / 'recipe'
+        (candidate / '.venv').mkdir(parents=True)
+        (candidate / '.venv/bin').symlink_to(self.bin, target_is_directory=True)
+        cases = [('workspace_not_empty', '84', True, {}), ('screen_range', '9', False, {}),
+                 ('inherited_browser_override', '84', False, {'ORION_BROWSER_CONFIG':'/tmp/unselected-example.toml'})]
+        for reason, screen, nonempty, overrides in cases:
+            with self.subTest(reason=reason):
+                workspace = self.root / reason
+                workspace.mkdir(mode=0o700)
+                if nonempty:
+                    (workspace / 'sentinel').write_text('Unrelated selected data')
+                before = {p.name:p.read_bytes() for p in workspace.iterdir()}
+                env = {k:v for k,v in os.environ.items() if not k.startswith(('ORION_BROWSER_', 'AGENT_BROWSER_'))}
+                env.update(DEMO_ROOT=str(workspace), DEMO_SCREEN=screen, **overrides)
+                p = subprocess.run([sys.executable, '-O', '-c', setup], cwd=candidate, env=env,
+                                   capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertIn(reason, p.stderr)
+                self.assertEqual({p.name:p.read_bytes() for p in workspace.iterdir()}, before)
 
     def test_malformed_component_envelope_returns_unknown_without_traceback(self):
         broken = self.root / 'broken-pm'
