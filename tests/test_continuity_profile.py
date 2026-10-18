@@ -137,6 +137,23 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(self.pmc('show', 'continuity-demo')['data']['task']['status'], 'in_progress')
         self.assertFalse((self.root / 'yield.json').exists())
 
+    def test_busy_browser_after_task_claim_requires_reconciliation(self):
+        subprocess.run([str(self.fake), '--json', 'lease', 'contdemo', '--holder', 'other-worker'],
+                       check=True, capture_output=True)
+        p = self.invoke('produce')
+        result = json.loads(p.stdout)
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(result['state'], 'reconciliation_required')
+        self.assertEqual(result['reason'], 'resource_not_free')
+        current = self.pmc('show', 'continuity-demo')['data']
+        self.assertEqual(current['claim']['holder'], result['outcomes']['pm']['holder'])
+        self.assertEqual(current['claim']['state'], 'live')
+        self.assertEqual(json.loads((self.root / 'fake-browser.json').read_text())['holder'], 'other-worker')
+        calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls.count(['browser', 'lease']), 1)
+        self.assertNotIn(['client', 'batch'], calls)
+        self.assertFalse((self.root / 'yield.json').exists())
+
     def test_consumer_observes_again_with_fresh_handles_before_done(self):
         first = self.invoke('produce')
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)

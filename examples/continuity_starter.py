@@ -608,6 +608,9 @@ def main():
     except (Exception, KeyboardInterrupt) as exc:
         fault = exc if isinstance(exc, Refusal) else Refusal('invalid_selection_or_unavailable', 7 if profile else 2)
         code = fault.exit_code
+        if code == 3 and profile and (profile.outcomes.get('pm', {}).get('state') == 'claimed'
+                                      or profile.outcomes.get('browser', {}).get('state') in ('leased', 'released')):
+            code = 7
         output.update(state='reconciliation_required' if code == 7 else 'refused', reason=fault.reason,
                       failed_operation=profile.failed_operation if profile else None, outcomes=profile.outcomes if profile else {})
     raw = wire(output)
