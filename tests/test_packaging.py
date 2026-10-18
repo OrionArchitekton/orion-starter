@@ -1,4 +1,5 @@
 """Distribution checks operate on the complete versioned profile."""
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -80,8 +81,8 @@ class PackagingTests(unittest.TestCase):
             git('init', '-q')
             git('add', '.')
             git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture')
-            def build(name):
-                return subprocess.run([sys.executable, str(target / 'scripts/build_candidate.py'), '--output',
+            def build(name, source='HEAD'):
+                return subprocess.run([sys.executable, str(target / 'scripts/build_candidate.py'), '--source', source, '--output',
                                        str(Path(tmp) / name)], capture_output=True, text=True)
             a, b = build('a.zip'), build('b.zip')
             self.assertEqual(a.returncode, 0, a.stdout + a.stderr)
@@ -91,6 +92,37 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue(all(not p.startswith('/') and '..' not in Path(p).parts
                                     and '.private' not in Path(p).parts and '.git' not in Path(p).parts
                                     for p in archive.namelist()))
+            originals = {name: (target / name).read_bytes() for name in
+                         ['manifest.json', 'profiles/continuity/manifest.json', 'LICENSE']}
+            cases = [('manifest.json', 'schema_version', 99),
+                     ('manifest.json', 'distribution', 'unapproved-distribution'),
+                     ('manifest.json', 'pm_contract', {'api_version': 99, 'store_format': 1}),
+                     ('profiles/continuity/manifest.json', 'handoff_contract', {'interface_version': 99}),
+                     ('profiles/continuity/manifest.json', 'components', []),
+                     ('LICENSE', None, None)]
+            for index, (name, field, value) in enumerate(cases):
+                with self.subTest(selected_commit_tampering=name, field=field):
+                    if field:
+                        invalid = json.loads(originals[name])
+                        invalid[field] = value
+                        (target / name).write_text(json.dumps(invalid))
+                    else:
+                        (target / name).write_bytes(originals[name] + b'\nAdditional restrictive terms.\n')
+                    if name == 'profiles/continuity/manifest.json':
+                        root = json.loads(originals['manifest.json'])
+                        root['optional_profiles']['continuity']['sha256'] = hashlib.sha256((target / name).read_bytes()).hexdigest()
+                        (target / 'manifest.json').write_text(json.dumps(root))
+                    git('add', *originals)
+                    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Invalid selected profile')
+                    selected = git('rev-parse', 'HEAD').stdout.decode().strip()
+                    for original_name, raw in originals.items():
+                        (target / original_name).write_bytes(raw)
+                    output = f'invalid-{index}.zip'
+                    refused = build(output, source=selected)
+                    self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+                    self.assertFalse((Path(tmp) / output).exists(), 'Invalid selected commit created an archive')
+            git('add', *originals)
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Restore valid profiles')
             (target / 'unreviewed.txt').write_text('synthetic unreviewed member')
             git('add', 'unreviewed.txt')
             git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Unexpected member')

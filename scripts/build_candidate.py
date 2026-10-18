@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import zipfile
+from check_profile import verify
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = frozenset('''
@@ -62,21 +63,7 @@ def build(source, output):
     if set(entries) != FILES:
         raise ValueError('unreviewed_or_missing_members')
     blobs = {name: git('cat-file', 'blob', oid) for name, oid in entries.items()}
-    def digest(name):
-        return hashlib.sha256(blobs[name]).hexdigest()
-    root = json.loads(blobs['manifest.json'])
-    descriptor = root['optional_profiles']['continuity']
-    if digest(descriptor['path']) != descriptor['sha256']:
-        raise ValueError('profile_digest_mismatch')
-    for manifest in (root, json.loads(blobs[descriptor['path']])):
-        if manifest['version'] != '0.2.0-rc.1':
-            raise ValueError('unsupported_distribution')
-        checks = [(manifest.get('python_lock_path', 'requirements.lock'), manifest['python_lock_sha256']),
-                  ('driver/package-lock.json', manifest['navigation_client']['npm_lock_sha256']),
-                  (manifest['bootstrap']['path'], manifest['bootstrap']['sha256'])]
-        checks += [(e['path'], e['sha256']) for e in manifest['examples']]
-        if any(digest(name) != expected for name, expected in checks):
-            raise ValueError('member_digest_mismatch')
+    verify(blobs.__getitem__)
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as target:
         with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
