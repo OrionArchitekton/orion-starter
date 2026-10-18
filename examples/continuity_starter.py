@@ -10,6 +10,7 @@ import selectors
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -190,6 +191,7 @@ class Profile:
         self.root = p.parent
         require(self.root.is_dir() and self.root.stat().st_uid == os.getuid()
                 and stat.S_IMODE(self.root.stat().st_mode) == 0o700, 'non_private_workspace', 2)
+        require(not any(a.is_symlink() for a in (self.root, *self.root.parents)), 'symlink_workspace', 2)
         require(not any((a / '.git').exists() for a in (self.root, *self.root.parents)), 'workspace_in_git', 2)
         self.s = strict_json(read_private(p, self.root))
         shape(self.s, 'selection_version run_id workspace pm handoff browser client')
@@ -214,6 +216,20 @@ class Profile:
                 require(strict_json(raw) == {}, 'client_config_overrides', 2)
         cfg = self.config
         require(set(cfg) <= {'paths', 'browser', 'timing', 'lease'}, 'browser_config_overrides', 2)
+        timing = cfg.get('timing', {})
+        require(isinstance(timing, dict) and set(timing) <= {'start_limit_seconds', 'stop_grace_seconds',
+                'service_stop_timeout_seconds'}, 'timing_config', 2)
+        for key, low, high, default in [('start_limit_seconds', 2, 600, 30), ('stop_grace_seconds', 1, 300, 15),
+                                        ('service_stop_timeout_seconds', 11, 600, 30)]:
+            value = timing.get(key, default)
+            require(type(value) is int and low <= value <= high, 'timing_config', 2)
+        require(timing.get('service_stop_timeout_seconds', 30) >= timing.get('stop_grace_seconds', 15) + 10,
+                'timing_config', 2)
+        lease_config = cfg.get('lease', {})
+        require(isinstance(lease_config, dict) and set(lease_config) <= {'ttl_minutes', 'max_minutes'}, 'lease_config', 2)
+        ttl, maximum = lease_config.get('ttl_minutes', 30), lease_config.get('max_minutes', 240)
+        require(type(ttl) is int and type(maximum) is int and 1 <= ttl <= maximum <= 10080 and maximum >= 3,
+                'lease_config', 2)
         shape(cfg['paths'], 'state profiles')
         for path in cfg['paths'].values():
             owned(absolute(path), self.root)
@@ -282,7 +298,8 @@ class Profile:
                                        '--request-id', request, '--api-version', '1', *map(str, args)],
                                       8 * 1024 * 1024)
         result = strict_json(raw, 8 * 1024 * 1024)
-        require(isinstance(result, dict) and result.get('api_version') == 1 and result.get('request_id') == request
+        require(isinstance(result, dict) and type(result.get('api_version')) is int
+                and result.get('api_version') == 1 and result.get('request_id') == request
                 and result.get('command') == (' '.join(args[:2]) if args[0] == 'evidence' else args[0]), 'pm_envelope')
         if result.get('ok') is False and code == 3 and result.get('outcome') == 'rejected':
             raise Refusal('pm_refused', 3)
@@ -290,6 +307,8 @@ class Profile:
                 and result.get('outcome') in ('observed', 'committed', 'no_change')
                 and isinstance(result.get('data'), dict), 'pm_unknown')
         data = result['data']
+        if args[0] in ('show', 'claim', 'release', 'transition', 'evidence'):
+            require(isinstance(data.get('task'), dict) and isinstance(data.get('claim'), dict), 'pm_task_shape')
         if args[0] != 'version':
             require(data.get('store_id') == self.s['pm']['store_id'], 'pm_store_changed', 3)
         return data
@@ -299,7 +318,8 @@ class Profile:
         code, raw, _ = self.execute('handoff', args[0], [self.s['handoff']['executable'], '--store', self.s['handoff']['store'],
                                        '--json', *map(str, args)], 524288, input_bytes=input_bytes)
         result = strict_json(raw, 524288)
-        require(isinstance(result, dict) and result.get('interface_version') == 1 and result.get('authority') == 'none'
+        require(isinstance(result, dict) and type(result.get('interface_version')) is int
+                and result.get('interface_version') == 1 and result.get('authority') == 'none'
                 and result.get('command') == ('version' if args[0] == '--version' else args[0]), 'handoff_envelope')
         refusals = {10: {'inspect_only'}, 11: {'no_match', 'ambiguous', 'not_found', 'no_task_context'},
                     65: {'invalid_input'}, 73: {'conflict', 'busy', 'id_collision'}}
@@ -310,11 +330,11 @@ class Profile:
 
     def inspect(self):
         pm = self.pm('version')
-        require(pm.get('package_version') == '0.1.1' and pm.get('api_version') == 1
+        require(pm.get('package_version') == '0.1.1' and type(pm.get('api_version')) is int and pm.get('api_version') == 1
                 and {'tasks.v1', 'claims.v1', 'transitions.v1', 'evidence.v1', 'coverage.v1'}
                 <= set(pm.get('capabilities', [])), 'pm_version', 3)
         h = self.handoff('--version')
-        require(h == {'package_version': '0.1.0', 'interface_version': 1, 'store_version': 1, 'record_version': 1},
+        require(wire(h) == wire({'package_version': '0.1.0', 'interface_version': 1, 'store_version': 1, 'record_version': 1}),
                 'handoff_version', 3)
         for component, expected in [('browser', b'orion-browser 0.1.0'), ('client', b'agent-browser 0.25.4')]:
             self.failed_operation = component + ':version'
@@ -355,7 +375,7 @@ class Profile:
         code, raw, _ = self.execute('browser', command, [self.s['browser']['executable'], '--json',
                                    command, self.s['browser']['name'], *args], 524288, timeout)
         result = strict_json(raw, 524288)
-        require(isinstance(result, dict) and result.get('exit') == code
+        require(isinstance(result, dict) and type(result.get('exit')) is int and result.get('exit') == code
                 and result.get('ok') is (code == 0) and result.get('code') == {0: 'OK', 3: 'BUSY', 4: 'NOT_HOLDER',
                     6: 'BROWSER_DOWN', 7: 'UNHEALTHY', 1: 'INTERNAL', 2: 'USAGE'}.get(code)
                 and isinstance(result.get('data'), dict), 'browser_envelope')
@@ -489,11 +509,11 @@ class Profile:
                 and record.get('context_as_of') == receipt['observation']['observed_at'], 'record_binding', 3)
         body = record.get('body')
         require(isinstance(body, str) and len(body.encode()) <= 4096, 'record_body', 3)
-        require(strict_json(body.encode(), 4096) == {
+        require(wire(strict_json(body.encode(), 4096)) == wire({
             'binding_version': 1, 'run_id': self.run_id, 'pm_store_id': self.s['pm']['store_id'],
             'pm_task_id': self.s['pm']['task_id'], 'task_definition_sha256': self.s['pm']['task_definition_sha256'],
             'producer_claim_generation': receipt['producer_generation'],
-            'producer_observation_sha256': receipt['observation']['sha256']}, 'context_binding', 3)
+            'producer_observation_sha256': receipt['observation']['sha256']}), 'context_binding', 3)
         require(record.get('acceptance_claims') == [{'baseline': 'starter-synthetic-read-v1',
                 'reference': 'https://example.com/', 'accepted_at': receipt['observation']['observed_at']}]
                 and record.get('evidence') == [{'source': 'starter-producer',
@@ -581,12 +601,21 @@ def main():
         output.update(state={'produce': 'yielded', 'continue': 'completed', 'inspect': 'inspected'}[mode],
                       outcomes=outcomes, failed_operation=None)
         code = 0
-    except (Refusal, OSError, ValueError, KeyError, TypeError) as exc:
+    except (Exception, KeyboardInterrupt) as exc:
         fault = exc if isinstance(exc, Refusal) else Refusal('invalid_selection_or_unavailable', 7 if profile else 2)
         code = fault.exit_code
         output.update(state='reconciliation_required' if code == 7 else 'refused', reason=fault.reason,
                       failed_operation=profile.failed_operation if profile else None, outcomes=profile.outcomes if profile else {})
-    print(wire(output).decode())
+    try:
+        print(wire(output).decode(), flush=True)
+    except BrokenPipeError:
+        # Suppress the interpreter's later flush traceback; delivery remains unknown.
+        fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(fd, sys.stdout.fileno())
+        finally:
+            os.close(fd)
+        return 7
     return code
 
 

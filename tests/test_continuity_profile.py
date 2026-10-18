@@ -80,6 +80,17 @@ class ContinuityTests(unittest.TestCase):
     def snapshot(self):
         return {str(p.relative_to(self.root)): digest(p) for p in self.root.rglob('*') if p.is_file()}
 
+    def proxy(self, kind):
+        config = self.root / 'proxy.json'
+        values = json.loads(config.read_text()) if config.exists() else {}
+        values[kind] = self.value[kind]['executable']
+        self.write(config, values)
+        path = self.root / (kind + '-proxy')
+        path.write_text('#!' + sys.executable + '\n' + (ROOT / 'tests/fixtures/component_cli.py').read_text())
+        path.chmod(0o700)
+        self.value[kind]['executable'] = str(path)
+        self.write(self.selection, self.value)
+
     def test_inspect_selected_installed_stores_without_mutations(self):
         self.assertTrue(EXAMPLE.is_file(), 'continuity example not implemented')
         before = self.snapshot()
@@ -200,6 +211,118 @@ class ContinuityTests(unittest.TestCase):
         calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
         self.assertEqual(calls.count(['client', 'batch']), 2)
         self.assertEqual(calls.count(['browser', 'lease']), 2)
+
+    def test_boolean_api_version_is_not_integer_version_one(self):
+        self.proxy('pm')
+        self.write(self.root / 'faults.json', {'pm:version': 'boolean_api'})
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+
+    def test_unbounded_timing_configuration_is_refused_during_inspection(self):
+        self.config.write_text('[timing]\nstart_limit_seconds = 999999999999\n' + self.config.read_text())
+        self.value['browser']['config_sha256'] = digest(self.config)
+        self.write(self.selection, self.value)
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+
+    def test_corrupt_nested_component_data_is_unknown_without_traceback(self):
+        self.proxy('pm')
+        self.write(self.root / 'faults.json', {'pm:show': 'bad_task'})
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(p.stderr, '')
+        self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+
+    def test_producer_interruptions_do_not_replay_or_claim_yield(self):
+        points = ['pm:claim', 'browser:lease', 'client:connect', 'client:batch', 'browser:release',
+                  'client:close', 'handoff:record', 'pm:release']
+        for index, (point, moment) in enumerate((p, m) for p in points for m in ('before', 'after')):
+            with self.subTest(point=point, moment=moment):
+                if index:
+                    self.setUp()
+                self.proxy('pm')
+                self.proxy('handoff')
+                self.write(self.root / 'faults.json', {point: moment})
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+                self.assertEqual(p.stderr, '')
+                self.assertFalse((self.root / 'yield.json').exists())
+                key = point.split(':')
+                calls = []
+                for file in ('calls.jsonl', 'proxy-calls.jsonl'):
+                    if (self.root / file).exists():
+                        calls += [json.loads(x) for x in (self.root / file).read_text().splitlines()]
+                self.assertEqual(calls.count(key), 1)
+
+    def test_consumer_commit_interruptions_are_not_false_completion(self):
+        points = ['pm:claim', 'pm:evidence:attach', 'pm:transition']
+        for index, (point, moment) in enumerate((p, m) for p in points for m in ('before', 'after')):
+            with self.subTest(point=point, moment=moment):
+                if index:
+                    self.setUp()
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.proxy('pm')
+                self.write(self.root / 'faults.json', {point: moment})
+                p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+                calls = [json.loads(x) for x in (self.root / 'proxy-calls.jsonl').read_text().splitlines()]
+                self.assertEqual(calls.count(['pm', point[3:]]), 1)
+                current = self.pmc('show', 'continuity-demo')['data']
+                self.assertEqual(current['task']['status'], 'done' if point == 'pm:transition' and moment == 'after'
+                                 else 'todo' if point == 'pm:claim' and moment == 'before' else 'in_progress')
+
+    def test_receipt_storage_failure_stops_forward_work(self):
+        for index, fault in enumerate(('readonly_log', 'fill_log')):
+            with self.subTest(fault=fault):
+                if index:
+                    self.setUp()
+                self.write(self.root / 'faults.json', {'client:batch': fault})
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+                self.assertFalse((self.root / 'yield.json').exists())
+                calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
+                self.assertNotIn(['browser', 'release'], calls)
+                for directory in (self.root / 'receipts').iterdir():
+                    directory.chmod(0o700)
+
+    def test_explicit_reconciliation_then_new_attempt_can_finish(self):
+        self.write(self.root / 'faults.json', {'client:batch': 'after'})
+        failed = self.invoke('produce')
+        self.assertEqual(failed.returncode, 7, failed.stdout + failed.stderr)
+        current = self.pmc('show', 'continuity-demo')['data']
+        holder = current['claim']['holder']
+        subprocess.run([str(self.fake), '--json', 'release', 'contdemo', '--holder', holder],
+                       check=True, capture_output=True)
+        self.pmc('release', 'continuity-demo', '--holder', holder, '--generation', current['claim']['generation'],
+                 '--expect-revision', current['task']['revision'])
+        self.write(self.root / 'faults.json', {})
+        repaired = self.invoke('produce')
+        self.assertEqual(repaired.returncode, 0, repaired.stdout + repaired.stderr)
+        self.assertNotEqual(json.loads(failed.stdout)['attempt_id'], json.loads(repaired.stdout)['attempt_id'])
+        done = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_oversized_version_output_is_bounded_and_not_echoed(self):
+        self.fake.write_text('#!' + sys.executable + '\nprint("x" * 600000)\n')
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertLess(len(p.stdout), 65536)
+        self.assertEqual(json.loads(p.stdout)['reason'], 'output_limit')
+        self.assertEqual(p.stderr, '')
+
+    def test_lost_result_pipe_exits_unknown_without_traceback(self):
+        p = subprocess.Popen([sys.executable, str(EXAMPLE), '--selection', str(self.selection), 'inspect'],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.stdout.close()
+        error = p.stderr.read()
+        p.stderr.close()
+        self.assertEqual(p.wait(timeout=20), 7, error)
+        self.assertEqual(error, b'')
 
 
 if __name__ == '__main__':

@@ -75,6 +75,13 @@ else:
     else:
         result = {'success': True, 'data': {'launched': True} if command == 'connect' else {'closed': True},
                   'error': None}
+    if fault == 'readonly_log':
+        for directory in (p / 'receipts').iterdir():
+            directory.chmod(0o500)
+    if fault == 'fill_log':
+        directory = next((p / 'receipts').iterdir())
+        (directory / 'padding').write_bytes(b'x' * 1000000)
+        (directory / 'padding').chmod(0o600)
 if fault == 'after':
     raise SystemExit(1)
 print(json.dumps(result))
