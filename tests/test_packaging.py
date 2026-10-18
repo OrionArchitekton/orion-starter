@@ -24,13 +24,33 @@ class PackagingTests(unittest.TestCase):
                     shutil.copytree(source, target / path, ignore=shutil.ignore_patterns('__pycache__'))
                 else:
                     shutil.copyfile(source, target / path)
-            def check():
-                return subprocess.run([sys.executable, str(target / 'scripts/check_profile.py')],
+            def check(*options):
+                return subprocess.run([sys.executable, *options, str(target / 'scripts/check_profile.py')],
                                       capture_output=True, text=True)
             self.assertEqual(check().returncode, 0)
+            self.assertEqual(check('-O').returncode, 0)
+            lock = target / 'profiles/continuity/requirements.lock'
+            original_lock = lock.read_bytes()
             with (target / 'profiles/continuity/requirements.lock').open('a') as f:
                 f.write('\n# tampered after review\n')
-            self.assertNotEqual(check().returncode, 0)
+            for options in ((), ('-O',), ('-OO',)):
+                with self.subTest(tampered='lock', options=options):
+                    self.assertNotEqual(check(*options).returncode, 0)
+            lock.write_bytes(original_lock)
+            outside = target.parent / (target.name + '-outside-license')
+            outside.write_text('MIT License\n')
+            self.addCleanup(outside.unlink)
+            (target / 'LICENSE').unlink()
+            (target / 'LICENSE').symlink_to(outside)
+            with self.subTest(tampered='selected symlink', options=('-O',)):
+                self.assertNotEqual(check('-O').returncode, 0)
+            (target / 'LICENSE').unlink()
+            shutil.copyfile(ROOT / 'LICENSE', target / 'LICENSE')
+            invalid = json.loads((target / 'manifest.json').read_text())
+            invalid['schema_version'] = 99
+            (target / 'manifest.json').write_text(json.dumps(invalid))
+            with self.subTest(tampered='contract', options=('-O',)):
+                self.assertNotEqual(check('-O').returncode, 0)
             manifest = json.loads((ROOT / 'profiles/continuity/manifest.json').read_text())
             self.assertEqual(manifest['handoff_contract'], {'interface_version': 1, 'store_version': 1, 'record_version': 1})
 
