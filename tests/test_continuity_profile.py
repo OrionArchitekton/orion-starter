@@ -126,6 +126,23 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(self.pmc('show', 'continuity-demo')['data']['task']['status'], 'in_progress')
         self.assertFalse((self.root / 'yield.json').exists())
 
+    def test_consumer_observes_again_with_fresh_handles_before_done(self):
+        first = self.invoke('produce')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        producer = json.loads(first.stdout)
+        second = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        consumer = json.loads(second.stdout)
+        self.assertEqual(consumer['state'], 'completed')
+        self.assertNotEqual(producer['outcomes']['pm']['generation'], consumer['outcomes']['pm']['generation'])
+        self.assertNotEqual(producer['outcomes']['browser']['session'], consumer['outcomes']['browser']['session'])
+        current = self.pmc('show', 'continuity-demo')['data']
+        self.assertEqual(current['task']['status'], 'done')
+        self.assertEqual(current['claim']['state'], 'absent')
+        self.assertEqual(len(current['task']['evidence']), 1)
+        calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls.count(['client', 'batch']), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

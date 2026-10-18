@@ -297,6 +297,10 @@ class Profile:
         result = strict_json(raw, 524288)
         require(isinstance(result, dict) and result.get('interface_version') == 1 and result.get('authority') == 'none'
                 and result.get('command') == ('version' if args[0] == '--version' else args[0]), 'handoff_envelope')
+        refusals = {10: {'inspect_only'}, 11: {'no_match', 'ambiguous', 'not_found', 'no_task_context'},
+                    65: {'invalid_input'}, 73: {'conflict', 'busy', 'id_collision'}}
+        if result.get('ok') is False and result.get('code') in refusals.get(code, set()):
+            raise Refusal('handoff_refused', 3)
         require(code == 0 and result.get('ok') is True and isinstance(result.get('data'), dict), 'handoff_unknown')
         return result['data']
 
@@ -458,6 +462,86 @@ class Profile:
         durable_file(self.root / 'yield.json', receipt, self.root)
         return self.outcomes
 
+    def context(self, receipt):
+        picked = self.handoff('pickup', '--task', self.key, '--max-age-seconds', '86400')
+        require(picked.get('match') == 'task' and picked.get('integrity') == 'valid'
+                and picked.get('disposition') == 'context_available' and picked.get('recency') == 'within_window'
+                and picked.get('acceptance') == 'recorded' and picked.get('task_key') == self.key
+                and picked.get('selected_record_id') == receipt['record_id']
+                and picked.get('continuation') is not None and picked.get('reasons') == [], 'context_unusable', 3)
+        shown = self.handoff('show', receipt['record_id'])
+        require(shown.get('sha256') == receipt['record_sha256'] and shown.get('current') is True
+                and shown.get('record') == picked.get('record'), 'record_changed', 3)
+        record = shown['record']
+        require(record.get('record_version') == 1 and record.get('record_id') == receipt['record_id']
+                and record.get('task_key') == self.key and record.get('project_key') == 'starter-' + self.run_id
+                and record.get('status') == 'active' and record.get('actor') == receipt['producer_holder']
+                and record.get('request_id') == receipt['producer_attempt_id']
+                and record.get('context_as_of') == receipt['observation']['observed_at'], 'record_binding', 3)
+        body = record.get('body')
+        require(isinstance(body, str) and len(body.encode()) <= 4096, 'record_body', 3)
+        require(strict_json(body.encode(), 4096) == {
+            'binding_version': 1, 'run_id': self.run_id, 'pm_store_id': self.s['pm']['store_id'],
+            'pm_task_id': self.s['pm']['task_id'], 'task_definition_sha256': self.s['pm']['task_definition_sha256'],
+            'producer_claim_generation': receipt['producer_generation'],
+            'producer_observation_sha256': receipt['observation']['sha256']}, 'context_binding', 3)
+        require(record.get('acceptance_claims') == [{'baseline': 'starter-synthetic-read-v1',
+                'reference': 'https://example.com/', 'accepted_at': receipt['observation']['observed_at']}]
+                and record.get('evidence') == [{'source': 'starter-producer',
+                'artifact': 'sha256:' + receipt['observation']['sha256'],
+                'observed_at': receipt['observation']['observed_at'],
+                'scope': 'Synthetic page read and clean release.', 'reference': 'https://example.com/'}],
+                'context_evidence', 3)
+        self.outcomes['handoff'] = {'record_id': receipt['record_id'], 'sha256': receipt['record_sha256'], 'state': 'verified'}
+
+    def continue_task(self, filename):
+        receipt = strict_json(read_private(absolute(filename), self.root))
+        shape(receipt, 'receipt_version run_id producer_attempt_id pm_store_id pm_task_id task_definition_sha256 '
+              'producer_generation producer_holder browser_session handoff_task_key handoff_store_role record_id '
+              'record_sha256 observation resource_stop client_closed browser_down pm_yield')
+        shape(receipt['observation'], 'sha256 observed_at')
+        for key, expected in [('receipt_version', 1), ('run_id', self.run_id), ('pm_store_id', self.s['pm']['store_id']),
+                              ('pm_task_id', self.s['pm']['task_id']), ('handoff_task_key', self.key),
+                              ('task_definition_sha256', self.s['pm']['task_definition_sha256']),
+                              ('handoff_store_role', 'selected_handoff'), ('resource_stop', 'clean'),
+                              ('client_closed', True), ('browser_down', True),
+                              ('pm_yield', {'task_status': 'todo', 'claim_state': 'absent'})]:
+            require(receipt[key] == expected and type(receipt[key]) is type(expected), 'yield_receipt_mismatch', 3)
+        for key, length in [('producer_attempt_id', 32), ('producer_generation', 32), ('record_sha256', 64)]:
+            require(isinstance(receipt[key], str) and re.fullmatch('[0-9a-f]{' + str(length) + '}', receipt[key]),
+                    'receipt_identity', 3)
+        require(receipt['producer_holder'] == 'cont-' + receipt['producer_attempt_id']
+                and isinstance(receipt['browser_session'], str) and 1 <= len(receipt['browser_session']) <= 128
+                and str(uuid.UUID(receipt['record_id'])) == receipt['record_id']
+                and receipt['observation']['sha256'] == sha(wire({'title': 'Example Domain', 'url': 'https://example.com/'})),
+                'receipt_identity', 3)
+        self.begin()
+        self.context(receipt)
+        self.acquire()
+        require(self.claim['generation'] != receipt['producer_generation'], 'reused_generation')
+        self.context(receipt)
+        observation = self.observe()
+        require(self.resource['session'] != receipt['browser_session'], 'reused_resource_session')
+        evidence = {'id': 'continuity-' + self.attempt, 'source': 'starter-consumer',
+                    'artifact': 'sha256:' + observation['sha256'], 'observed_at': observation['observed_at'],
+                    'scope': 'Independent consumer read and clean native browser release.', 'ref': 'https://example.com/'}
+        evidence_file = self.journal / 'evidence.json'
+        durable_file(evidence_file, evidence, self.root)
+        data = self.current_claim()
+        flags = ['--holder', self.holder, '--generation', self.claim['generation']]
+        attached = self.pm('evidence', 'attach', self.s['pm']['task_id'], '--input', str(evidence_file),
+                           '--expect-revision', data['task']['revision'], *flags)
+        current = self.current_claim()
+        require(current['task']['revision'] == attached['task']['revision'], 'revision_changed', 3)
+        self.pm('transition', self.s['pm']['task_id'], 'done', '--expect-revision', attached['task']['revision'], *flags)
+        final = self.pm('show', self.s['pm']['task_id'])
+        require(final['task']['status'] == 'done' and final['claim']['state'] == 'absent'
+                and evidence in final['task']['evidence'], 'completion_not_observed')
+        self.outcomes['pm']['state'] = 'completed'
+        self.outcomes['evidence'] = {'id': evidence['id'], **observation}
+        durable_file(self.journal / 'completed.json', self.outcomes, self.root)
+        return self.outcomes
+
 
 class Parser(argparse.ArgumentParser):
     def error(self, message):
@@ -481,9 +565,12 @@ def main():
         if mode == 'produce':
             require(outcomes['context_records'] == 0, 'context_already_exists', 3)
             outcomes = profile.produce()
+        elif mode == 'continue':
+            outcomes = profile.continue_task(args.yield_receipt)
         else:
             require(mode == 'inspect', 'mode_not_implemented', 3)
-        output.update(state='yielded' if mode == 'produce' else 'inspected', outcomes=outcomes, failed_operation=None)
+        output.update(state={'produce': 'yielded', 'continue': 'completed', 'inspect': 'inspected'}[mode],
+                      outcomes=outcomes, failed_operation=None)
         code = 0
     except (Refusal, OSError, ValueError, KeyError, TypeError) as exc:
         fault = exc if isinstance(exc, Refusal) else Refusal('invalid_selection_or_unavailable', 7 if profile else 2)
