@@ -125,6 +125,26 @@ class ContinuityTests(unittest.TestCase):
                 self.assertIn(reason, p.stderr)
                 self.assertEqual({p.name:p.read_bytes() for p in workspace.iterdir()}, before)
 
+    def test_fresh_terminal_stops_when_continuation_refuses(self):
+        recipe = (ROOT / 'profiles/continuity/README.md').read_text()
+        block = re.findall(r'```bash\n(.*?)\n```', recipe, re.S)[-1]
+        candidate = self.root / 'fresh-terminal'
+        binary = candidate / '.venv/bin'
+        binary.mkdir(parents=True)
+        for name, code in [('orion-pm', 'print("UNEXPECTED_PM_CALL")'), ('orion-browser', 'raise SystemExit(6)')]:
+            path = binary / name
+            path.write_text('#!' + sys.executable + '\n' + code + '\n')
+            path.chmod(0o700)
+        for code in (2, 3, 7):
+            with self.subTest(continuation_exit=code):
+                path = binary / 'python'
+                path.write_text('#!' + sys.executable + '\nraise SystemExit(' + str(code) + ')\n')
+                path.chmod(0o700)
+                p = subprocess.run(['bash', '-c', block], cwd=candidate,
+                                   env={**os.environ, 'DEMO_ROOT':str(self.root)}, capture_output=True, text=True)
+                self.assertEqual(p.returncode, code, p.stdout + p.stderr)
+                self.assertNotIn('UNEXPECTED_PM_CALL', p.stdout)
+
     def test_malformed_component_envelope_returns_unknown_without_traceback(self):
         broken = self.root / 'broken-pm'
         broken.write_text('#!' + sys.executable + '\nprint("[]")\n')

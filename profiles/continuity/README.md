@@ -108,6 +108,7 @@ Expect `yielded`, task `todo`, claim `absent`. The producer reads only `https://
 In a second terminal, select the same candidate and explicitly set `DEMO_ROOT` to the directory above. Review the current request and synthetic goal. Do not copy a holder or generation.
 
 ```bash
+set -euo pipefail
 .venv/bin/python examples/continuity_starter.py --selection "$DEMO_ROOT/selection.json" \
   continue --yield-receipt "$DEMO_ROOT/yield.json"
 .venv/bin/orion-pm --json --home "$DEMO_ROOT/pm" show continuity-demo
