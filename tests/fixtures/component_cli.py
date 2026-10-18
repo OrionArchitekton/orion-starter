@@ -23,12 +23,14 @@ if fault == 'before':
 result = subprocess.run([cfg[kind], *args], input=sys.stdin.buffer.read(), capture_output=True)
 if fault == 'after':
     os.kill(os.getpid(), signal.SIGKILL)
-if fault in ('boolean_api', 'bad_task'):
+if fault in ('boolean_api', 'bad_task', 'huge_digest'):
     value = json.loads(result.stdout)
     if fault == 'boolean_api':
         value['api_version'] = True
-    else:
+    elif fault == 'bad_task':
         value['data']['task'] = []
+    else:
+        value['data']['sha256'] = 'z' * 70000
     print(json.dumps(value))
 else:
     sys.stdout.buffer.write(result.stdout)

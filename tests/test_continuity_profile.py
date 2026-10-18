@@ -324,6 +324,14 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(p.wait(timeout=20), 7, error)
         self.assertEqual(error, b'')
 
+    def test_corrupt_record_digest_cannot_expand_public_output(self):
+        self.proxy('handoff')
+        self.write(self.root / 'faults.json', {'handoff:record': 'huge_digest', 'handoff:show': 'huge_digest'})
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7)
+        self.assertLess(len(p.stdout.encode()), 65536)
+        self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+
 
 if __name__ == '__main__':
     unittest.main()

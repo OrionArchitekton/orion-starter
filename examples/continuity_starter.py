@@ -466,6 +466,10 @@ class Profile:
                                'reference': 'https://example.com/'}], 'body': wire(body).decode()}
         self.current_claim()
         recorded = self.handoff('record', '--input', '-', input_bytes=wire(value))
+        require(isinstance(recorded.get('record_id'), str) and len(recorded['record_id']) == 36
+                and str(uuid.UUID(recorded['record_id'])) == recorded['record_id']
+                and isinstance(recorded.get('sha256'), str) and re.fullmatch('[0-9a-f]{64}', recorded['sha256']),
+                'record_result')
         shown = self.handoff('show', recorded['record_id'])
         require(shown.get('sha256') == recorded.get('sha256') and shown.get('current') is True
                 and {k: v for k, v in shown['record'].items() if k not in ('record_id', 'created_at')} == value,
@@ -606,8 +610,12 @@ def main():
         code = fault.exit_code
         output.update(state='reconciliation_required' if code == 7 else 'refused', reason=fault.reason,
                       failed_operation=profile.failed_operation if profile else None, outcomes=profile.outcomes if profile else {})
+    raw = wire(output)
+    if len(raw) + 1 > 65536:
+        code = 7
+        raw = wire({**output, 'state': 'reconciliation_required', 'reason': 'output_limit', 'outcomes': {}})
     try:
-        print(wire(output).decode(), flush=True)
+        print(raw.decode(), flush=True)
     except BrokenPipeError:
         # Suppress the interpreter's later flush traceback; delivery remains unknown.
         fd = os.open(os.devnull, os.O_WRONLY)

@@ -1,6 +1,6 @@
 ---
-status: proposed-not-exercised
-verified: null
+status: private-candidate-verified
+verified: 2026-10-17
 review_after: 2026-10-31
 topics: [orion-starter, continuity, local-claims, browser-cleanup, release-rollback]
 references:
@@ -12,7 +12,7 @@ references:
 
 # Starter continuity operation and recovery
 
-Private planned runbook. The continuity example is not implemented yet. These procedures must be exercised and updated with exact commands/results before a candidate is accepted; this document is not an assertion of runtime readiness.
+Private candidate runbook. The documented source walkthrough and representative interruption/receipt-failure paths have been exercised; selected stopped-writer PM/Handoff backups preserve task and record bytes on read-back. The external release-verification receipt must additionally bind native results to the final extracted archive. Publication and estate adoption remain separately approved actions.
 
 ## Rollout and observation
 
@@ -64,4 +64,4 @@ To roll back a private candidate, return to the preserved RC2 profile/environmen
 
 ## Acceptance before release
 
-Exercise successful rollout and cleanup, representative command interruptions, a disk/receipt-write failure, wrong ownership, and removal on the declared disposable environment. Bind results to final artifact hashes and record remaining unknowns. Replace `verified: null` only with the actual verification date and retained receipt references. Tests or runbook prose cannot stand in for the native three-component result.
+Exercise successful rollout and cleanup, representative command interruptions, a disk/receipt-write failure, wrong ownership, and removal on the declared disposable environment. Bind results to final artifact hashes and record remaining unknowns. Source checks are not an exact-archive verification. Retain the external release-verification receipt and scoped evidence; tests or runbook prose cannot stand in for the native three-component result. Browser credential/profile restore is not part of this anonymous demonstration's backup claim.

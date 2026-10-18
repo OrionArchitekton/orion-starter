@@ -1,8 +1,8 @@
-# Orion starter: PM + browser
+# Orion starter: local coordination profiles
 
-Public prerelease 0.1.0-rc.2, combining the public PM and browser components.
-The downloadable archive preserves the exact preparation snapshot and validation
-receipt approved for this prerelease.
+Prerelease candidate **0.2.0-rc.1**. The default PM/browser profile below keeps its independent roles and pinned inputs. The optional [continuity walkthrough](profiles/continuity/README.md) adds Handoff and a separate full dependency lock.
+
+The earlier RC2 archive remains immutable. Its receipt is preserved as historical evidence; final combined native proof belongs in the external release-verification asset for this candidate.
 
 Give two cooperating local agents one shared task and a browser they can lease.
 The first profile is a version manifest, reproducible dependency locks, public
