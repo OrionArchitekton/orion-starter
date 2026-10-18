@@ -217,6 +217,10 @@ class Profile:
         shape(cfg['paths'], 'state profiles')
         for path in cfg['paths'].values():
             owned(absolute(path), self.root)
+        states = [absolute(self.s['pm']['home']), absolute(self.s['handoff']['store']),
+                  *(absolute(p) for p in cfg['paths'].values()), self.root / 'receipts', self.root / 'client-sockets']
+        require(all(a != self.root and all(a != b and a not in b.parents and b not in a.parents
+                    for b in states[i + 1:]) for i, a in enumerate(states)), 'overlapping_state', 2)
         require(len(cfg['browser']) == 1, 'browser_selection', 2)
         browser = cfg['browser'][0]
         shape(browser, 'name screen restore_session')
@@ -473,6 +477,9 @@ class Profile:
         require(shown.get('sha256') == receipt['record_sha256'] and shown.get('current') is True
                 and shown.get('record') == picked.get('record'), 'record_changed', 3)
         record = shown['record']
+        require(all(isinstance(record.get(k), str) and record[k].strip() for k in
+                    ('last_observed_outcome', 'unfinished_step', 'recorded_next_step', 'remaining_authority')),
+                'incomplete_context', 3)
         require(record.get('record_version') == 1 and record.get('record_id') == receipt['record_id']
                 and record.get('task_key') == self.key and record.get('project_key') == 'starter-' + self.run_id
                 and record.get('status') == 'active' and record.get('actor') == receipt['producer_holder']

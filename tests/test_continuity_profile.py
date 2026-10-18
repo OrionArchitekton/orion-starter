@@ -143,6 +143,42 @@ class ContinuityTests(unittest.TestCase):
         calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
         self.assertEqual(calls.count(['client', 'batch']), 2)
 
+    def test_overlapping_component_state_is_refused_before_claim(self):
+        self.config.write_text(self.config.read_text().replace(str(self.root / 'browser-state'), str(self.root / 'pm')))
+        self.value['browser']['config_sha256'] = digest(self.config)
+        self.write(self.selection, self.value)
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertEqual(self.pmc('show', 'continuity-demo')['data']['claim']['state'], 'absent')
+        self.assertFalse((self.root / 'calls.jsonl').exists())
+
+    def test_invalid_context_variants_cannot_claim_or_browse(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_text())
+        argv = [str(self.handoff), '--json', '--store', str(self.root / 'handoff')]
+        old = json.loads(subprocess.check_output([*argv, 'show', receipt['record_id']]))['data']['record']
+        base = {k: v for k, v in old.items() if k not in ('record_id', 'created_at')}
+        calls = (self.root / 'calls.jsonl').read_bytes()
+        changes = [{'status': 'stale'}, {'status': 'done'}, {'context_as_of': '2000-01-01T00:00:00Z'},
+                   {'context_as_of': '2999-01-01T00:00:00Z'}, {'evidence': []},
+                   {'acceptance_claims': []}, {'body': '{}'}, {'recorded_next_step': None}]
+        for update in changes:
+            with self.subTest(update=update):
+                value = {**base, **update, 'predecessor': receipt['record_id']}
+                p = subprocess.run([*argv, 'record', '--input', '-'], input=json.dumps(value),
+                                   capture_output=True, text=True)
+                self.assertEqual(p.returncode, 0, p.stdout)
+                data = json.loads(p.stdout)['data']
+                receipt.update(record_id=data['record_id'], record_sha256=data['sha256'])
+                self.write(self.root / 'selected-yield.json', receipt)
+                p = self.invoke('continue', '--yield-receipt', self.root / 'selected-yield.json')
+                self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertEqual((self.root / 'calls.jsonl').read_bytes(), calls)
+                current = self.pmc('show', 'continuity-demo')['data']
+                self.assertEqual(current['task']['status'], 'todo')
+                self.assertEqual(current['claim']['state'], 'absent')
+
 
 if __name__ == '__main__':
     unittest.main()
