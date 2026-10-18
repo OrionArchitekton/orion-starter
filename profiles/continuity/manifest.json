@@ -40,7 +40,7 @@
   "examples": [
     {
       "path": "examples/continuity_starter.py",
-      "sha256": "924685ad6f978891e8a100650bdf4da4e6ffec4545f62f4cbb01d4723631b529",
+      "sha256": "55173edbbf9f148937fb1a703e4fe02e0b364af93b5209ef1d72caf60c44dffb",
       "origin": "Orion starter continuity example"
     }
   ],

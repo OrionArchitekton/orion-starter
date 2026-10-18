@@ -265,6 +265,7 @@ class Profile:
         self.resource = None
 
     def begin(self):
+        private_dir(self.root / 'client-sockets', self.root)
         parent = self.root / 'receipts'
         private_dir(parent, self.root)
         self.journal = parent / self.attempt
@@ -422,7 +423,6 @@ class Profile:
                 and endpoint.username is None and endpoint.password is None and not endpoint.query
                 and not endpoint.fragment and endpoint.path.startswith('/devtools/browser/'), 'resource_endpoint')
         self.outcomes['browser'] = {'holder': self.holder, 'session': r['session'], 'state': 'leased'}
-        private_dir(self.root / 'client-sockets', self.root)
         self.native_owner()
         self.client('connect', r['endpoint'])
         self.native_owner()

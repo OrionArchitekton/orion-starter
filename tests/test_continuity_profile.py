@@ -153,6 +153,29 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertEqual(json.loads(p.stdout)['data']['selected_record_id'], receipt['record_id'])
 
+    def test_unusable_client_socket_path_cannot_acquire_ownership(self):
+        for index, kind in enumerate(('file', 'non_private_directory')):
+            with self.subTest(kind=kind):
+                if index:
+                    self.setUp()
+                path = self.root / 'client-sockets'
+                if kind == 'file':
+                    path.write_text('Unrelated sentinel')
+                else:
+                    path.mkdir(mode=0o755)
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+                current = self.pmc('show', 'continuity-demo')['data']
+                self.assertEqual(current['task']['status'], 'todo')
+                self.assertEqual(current['claim']['state'], 'absent')
+                self.assertFalse((self.root / 'calls.jsonl').exists())
+                self.assertFalse((self.root / 'yield.json').exists())
+                if kind == 'file':
+                    self.assertEqual(path.read_text(), 'Unrelated sentinel')
+                else:
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+
     def test_malformed_lease_after_claim_remains_unknown(self):
         self.write(self.root / 'faults.json', {'browser:lease': 'bad_time'})
         p = self.invoke('produce')
