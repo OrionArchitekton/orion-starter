@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import uuid
 
 p = Path(sys.argv[0]).parent
@@ -31,6 +32,15 @@ lease = json.loads(state.read_text()) if state.exists() else None
 if kind == 'browser':
     code, data = 0, {}
     if command == 'status':
+        if fault == 'lose_claim' and not (p / 'claim-swapped').exists():
+            selected = json.loads((p / 'selection.json').read_text())['pm']
+            prefix = [selected['executable'], '--json', '--home', selected['home']]
+            current = json.loads(subprocess.check_output([*prefix, 'show', selected['task_id']]))['data']
+            subprocess.run([*prefix, 'release', selected['task_id'], '--holder', current['claim']['holder'],
+                            '--generation', current['claim']['generation'], '--expect-revision', current['task']['revision']],
+                           check=True, capture_output=True)
+            subprocess.run([*prefix, 'claim', selected['task_id'], '--holder', 'replacement'], check=True, capture_output=True)
+            (p / 'claim-swapped').touch(mode=0o600)
         code = 0 if lease else 6
         data = {'browser': 'contdemo', 'holder': lease['holder'] if lease else None,
                 'expires_at': lease['expires_at'] if lease else None,

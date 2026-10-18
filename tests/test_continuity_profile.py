@@ -179,6 +179,28 @@ class ContinuityTests(unittest.TestCase):
                 self.assertEqual(current['task']['status'], 'todo')
                 self.assertEqual(current['claim']['state'], 'absent')
 
+    def test_claim_lost_during_browser_preflight_cannot_acquire_resource(self):
+        self.write(self.root / 'faults.json', {'browser:status': 'lose_claim'})
+        p = self.invoke('produce')
+        self.assertNotEqual(p.returncode, 0)
+        calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertNotIn(['browser', 'lease'], calls)
+        self.assertEqual(self.pmc('show', 'continuity-demo')['data']['claim']['holder'], 'replacement')
+
+    def test_two_consumers_have_one_winner_and_only_one_browser_read(self):
+        first = self.invoke('produce')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        argv = [sys.executable, str(EXAMPLE), '--selection', str(self.selection), 'continue',
+                '--yield-receipt', str(self.root / 'yield.json')]
+        workers = [subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
+        replies = [p.communicate(timeout=30) for p in workers]
+        self.assertEqual(sorted(p.returncode for p in workers), [0, 3], replies)
+        states = sorted(json.loads(reply[0])['state'] for reply in replies)
+        self.assertEqual(states, ['completed', 'refused'])
+        calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls.count(['client', 'batch']), 2)
+        self.assertEqual(calls.count(['browser', 'lease']), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

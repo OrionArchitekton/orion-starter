@@ -372,6 +372,7 @@ class Profile:
                 'resource_changed', 3)
         expires = datetime.fromisoformat(data['expires_at'])
         require((expires - datetime.now(timezone.utc)).total_seconds() > 45, 'resource_expiring', 3)
+        self.current_claim()
 
     def client(self, command, *args):
         require(sha(read_private(absolute(self.s['client']['config']), self.root)) ==
@@ -390,6 +391,7 @@ class Profile:
         self.current_claim()
         before = self.browser('status')
         require(before.get('state') == 'down' and before.get('holder') is None, 'resource_not_free', 3)
+        self.current_claim()
         self.resource = self.browser('lease', '--holder', self.holder, '--minutes', '3')
         r = self.resource
         require(r.get('holder') == self.holder and isinstance(r.get('session'), str)
