@@ -1,0 +1,2 @@
+-r ../../requirements.in
+orion-handoff @ https://github.com/OrionArchitekton/orion-handoff/releases/download/v0.1.0/orion_handoff-0.1.0-py3-none-any.whl

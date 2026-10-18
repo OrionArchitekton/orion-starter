@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "distribution": "orion-starter",
-  "version": "0.1.0-rc.2",
-  "status": "public prerelease",
+  "version": "0.2.0-rc.1",
+  "status": "prerelease candidate",
   "profile": "PM + browser",
   "components": [
     {
@@ -49,8 +49,12 @@
     }
   ],
   "optional_profiles": {
-    "phone": "Not included; separate private release candidate",
-    "remote_hands": "Not included; active independent development"
+    "phone": "Public standalone package; not included or tested in this profile",
+    "remote_hands": "Not included; active independent development",
+    "continuity": {
+      "path": "profiles/continuity/manifest.json",
+      "sha256": "9585fbcbf031af248d4aded1b8419f74279a7c0228eb0f2a1c7ddf2061dbeaad"
+    }
   },
   "bootstrap": {
     "path": "bootstrap-requirements.txt",

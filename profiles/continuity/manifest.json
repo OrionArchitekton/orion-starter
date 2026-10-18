@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "distribution": "orion-starter",
+  "version": "0.2.0-rc.1",
+  "status": "prerelease candidate",
+  "profile": "PM + browser + Handoff",
+  "components": [
+    {
+      "name": "orion-pm",
+      "version": "0.1.1",
+      "url": "https://github.com/OrionArchitekton/orion-pm-oss/releases/download/v0.1.1/orion_pm-0.1.1-py3-none-any.whl",
+      "sha256": "54f28272550054c32958c67fd84094b825bb387f91ad3efe3b342d463b9c16c7",
+      "license": "MIT"
+    },
+    {
+      "name": "orion-browser",
+      "version": "0.1.0",
+      "url": "https://github.com/OrionArchitekton/orion-browser-oss/releases/download/v0.1.0/orion_browser-0.1.0-py3-none-any.whl",
+      "sha256": "ba793c5271dc7f1909f88823be88195b84f43fbbf58e5e9cd39c5efb085a746a",
+      "license": "MIT"
+    },
+    {
+      "name": "orion-handoff",
+      "version": "0.1.0",
+      "url": "https://github.com/OrionArchitekton/orion-handoff/releases/download/v0.1.0/orion_handoff-0.1.0-py3-none-any.whl",
+      "sha256": "e1f3e1e43839cfd2896cfc553bef9366867c1cf50bce1e4d4762cdbec9977e41",
+      "license": "MIT"
+    }
+  ],
+  "navigation_client": {
+    "name": "agent-browser",
+    "version": "0.25.4",
+    "npm_lock_sha256": "72628cdcdd2d64c8cc5abe8a0fc6625b4447f12374e61f51b17654ba8ad65264"
+  },
+  "python_lock_sha256": "28ad00e0e7216fe6236fb5146bf5bf81b3da87b434dbbeb74de23850fd7114e9",
+  "pm_contract": {
+    "api_version": 1,
+    "store_format": 1
+  },
+  "examples": [
+    {
+      "path": "examples/continuity_starter.py",
+      "sha256": "5ef8364222df2634eab846b4018401b7e0fe029fd13acebc5884537f7882899c",
+      "origin": "Orion starter continuity example"
+    }
+  ],
+  "bootstrap": {
+    "path": "bootstrap-requirements.txt",
+    "sha256": "4aed17ced2b8225bf1957cbc2fc7b056bf14ef0906aa5a09ad5c75ee5f6467ca",
+    "pip": "26.2",
+    "setuptools": "84.0.0"
+  },
+  "python_lock_path": "profiles/continuity/requirements.lock",
+  "handoff_contract": {
+    "interface_version": 1,
+    "store_version": 1,
+    "record_version": 1
+  },
+  "support_target": {
+    "python": "3.11",
+    "os": "Linux, native receipt on WSL2",
+    "architecture": "x86_64",
+    "filesystem": "ext4",
+    "systemd_user_manager": true,
+    "harness_hooks": false,
+    "cross_host_fencing": false
+  }
+}
