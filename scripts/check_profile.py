@@ -48,7 +48,8 @@ def main():
     require([(c['name'], c['version']) for c in continuity['components']] == [
         ('orion-pm', '0.1.1'), ('orion-browser', '0.1.0'), ('orion-handoff', '0.1.0')], 'unsupported_components')
     require(continuity['components'][:2] == manifest['components'], 'base_components_changed')
-    require('MIT License' in selected_file('LICENSE').read_text(), 'license_changed')
+    require(digest('LICENSE') == '684b097118cc67a5d1e356b77daa65c2b829a81325d73ddfc0140eeb6e10a56f',
+            'license_changed')
     print('Both profile locks, examples, contracts and MIT license verified')
 
 

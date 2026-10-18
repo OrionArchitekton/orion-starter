@@ -46,6 +46,11 @@ class PackagingTests(unittest.TestCase):
                 self.assertNotEqual(check('-O').returncode, 0)
             (target / 'LICENSE').unlink()
             shutil.copyfile(ROOT / 'LICENSE', target / 'LICENSE')
+            (target / 'LICENSE').write_text((ROOT / 'LICENSE').read_text() + '\nAdditional restrictive terms.\n')
+            for options in ((), ('-O',), ('-OO',)):
+                with self.subTest(tampered='license content', options=options):
+                    self.assertNotEqual(check(*options).returncode, 0)
+            shutil.copyfile(ROOT / 'LICENSE', target / 'LICENSE')
             invalid = json.loads((target / 'manifest.json').read_text())
             invalid['schema_version'] = 99
             (target / 'manifest.json').write_text(json.dumps(invalid))
