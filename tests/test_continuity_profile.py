@@ -231,6 +231,81 @@ class ContinuityTests(unittest.TestCase):
                 self.assertEqual(current['task']['status'], 'todo')
                 self.assertEqual(current['claim']['state'], 'absent')
 
+    def test_missing_selection_and_selected_store_bindings_do_not_mutate(self):
+        for index, case in enumerate(('missing_selection', 'empty_selection', 'missing_pm', 'missing_handoff',
+                                      'wrong_store', 'wrong_task')):
+            with self.subTest(case=case):
+                if index:
+                    self.setUp()
+                selection = self.selection
+                if case == 'missing_selection':
+                    selection = self.root / 'absent-selection.json'
+                elif case == 'empty_selection':
+                    self.write(selection, {})
+                else:
+                    if case == 'missing_pm':
+                        self.value['pm']['home'] = str(self.root / 'absent-pm')
+                    elif case == 'missing_handoff':
+                        self.value['handoff']['store'] = str(self.root / 'absent-handoff')
+                    elif case == 'wrong_store':
+                        self.value['pm']['store_id'] = '0' * 32
+                    else:
+                        self.value['pm']['task_id'] = 'absent-task'
+                    self.write(selection, self.value)
+                before = self.snapshot()
+                p = subprocess.run([sys.executable, str(EXAMPLE), '--selection', str(selection), 'inspect'],
+                                   capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.pmc('show', 'continuity-demo')['data']['claim']['state'], 'absent')
+                self.assertFalse((self.root / 'calls.jsonl').exists())
+
+    def test_receipt_identity_and_pickup_failures_cannot_claim_or_browse(self):
+        for index, case in enumerate(('wrong_store', 'wrong_task', 'wrong_run', 'before', 'after', 'bad_pickup')):
+            with self.subTest(case=case):
+                if index:
+                    self.setUp()
+                produced = self.invoke('produce')
+                self.assertEqual(produced.returncode, 0, produced.stdout + produced.stderr)
+                receipt = json.loads((self.root / 'yield.json').read_text())
+                calls = (self.root / 'calls.jsonl').read_bytes()
+                if case.startswith('wrong_'):
+                    key = {'wrong_store':'pm_store_id', 'wrong_task':'pm_task_id', 'wrong_run':'run_id'}[case]
+                    receipt[key] = str(uuid.uuid4()) if key == 'run_id' else 'other-selected-identity'
+                else:
+                    self.proxy('handoff')
+                    self.write(self.root / 'faults.json', {'handoff:pickup':case})
+                self.write(self.root / 'selected-yield.json', receipt)
+                p = self.invoke('continue', '--yield-receipt', self.root / 'selected-yield.json')
+                self.assertEqual(p.returncode, 3 if case.startswith('wrong_') else 7, p.stdout + p.stderr)
+                self.assertEqual((self.root / 'calls.jsonl').read_bytes(), calls)
+                current = self.pmc('show', 'continuity-demo')['data']
+                self.assertEqual(current['task']['status'], 'todo')
+                self.assertEqual(current['claim']['state'], 'absent')
+
+    def test_project_only_ambiguity_is_diagnostic_without_task_fallback(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_text())
+        calls = (self.root / 'calls.jsonl').read_bytes()
+        argv = [str(self.handoff), '--json', '--store', str(self.root / 'handoff')]
+        old = json.loads(subprocess.check_output([*argv, 'show', receipt['record_id']]))['data']['record']
+        other = {k:v for k,v in old.items() if k not in ('record_id', 'created_at')}
+        other.update(task_key='another-context', predecessor=None, request_id=uuid.uuid4().hex)
+        p = subprocess.run([*argv, 'record', '--input', '-'], input=json.dumps(other), capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        p = subprocess.run([*argv, 'pickup', '--project', old['project_key'], '--resume'], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 11, p.stdout + p.stderr)
+        diagnostic = json.loads(p.stdout)
+        self.assertEqual(diagnostic['code'], 'ambiguous')
+        self.assertEqual(diagnostic['authority'], 'none')
+        self.assertIsNone(diagnostic['data']['continuation'])
+        self.write(self.root / 'project-only.json', {'project_key':old['project_key']})
+        p = self.invoke('continue', '--yield-receipt', self.root / 'project-only.json')
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertEqual((self.root / 'calls.jsonl').read_bytes(), calls)
+        self.assertEqual(self.pmc('show', 'continuity-demo')['data']['claim']['state'], 'absent')
+
     def test_claim_lost_during_browser_preflight_cannot_acquire_resource(self):
         self.write(self.root / 'faults.json', {'browser:status': 'lose_claim'})
         p = self.invoke('produce')
@@ -383,6 +458,26 @@ class ContinuityTests(unittest.TestCase):
         self.assertNotEqual(json.loads(failed.stdout)['attempt_id'], json.loads(repaired.stdout)['attempt_id'])
         done = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_inspect_after_lost_result_observes_without_resuming(self):
+        self.write(self.root / 'faults.json', {'client:batch':'after'})
+        failed = self.invoke('produce')
+        self.assertEqual(failed.returncode, 7, failed.stdout + failed.stderr)
+        failure = json.loads(failed.stdout)
+        self.assertEqual(failure['state'], 'reconciliation_required')
+        self.assertEqual(failure['failed_operation'], 'client:batch')
+        records = [json.loads(p.read_text()) for p in (self.root / 'receipts' / failure['attempt_id']).glob('*.json')]
+        batch = next(row for row in records if row.get('component') == 'client' and row.get('command') == 'batch')
+        self.assertEqual(batch['exit'], 1)
+        self.assertEqual(batch['stdout_bytes'], 0)
+        before = self.snapshot()
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        diagnostic = json.loads(p.stdout)
+        self.assertEqual(diagnostic['state'], 'inspected')
+        self.assertEqual(diagnostic['outcomes'], {'task_status':'in_progress', 'claim_state':'live', 'context_records':0})
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / 'yield.json').exists())
 
     def test_oversized_version_output_is_bounded_and_not_echoed(self):
         self.fake.write_text('#!' + sys.executable + '\nprint("x" * 600000)\n')
