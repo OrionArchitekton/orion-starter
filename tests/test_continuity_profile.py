@@ -239,6 +239,29 @@ class ContinuityTests(unittest.TestCase):
         self.assertNotIn(['browser', 'lease'], calls)
         self.assertEqual(self.pmc('show', 'continuity-demo')['data']['claim']['holder'], 'replacement')
 
+    def test_resource_owner_or_expiry_change_stops_before_client_action(self):
+        for index, (point, fault, reason) in enumerate([
+                ('browser:status', 'replace_holder', 'resource_changed'),
+                ('browser:lease', 'short_lease', 'resource_expiring')]):
+            with self.subTest(fault=fault):
+                if index:
+                    self.setUp()
+                self.write(self.root / 'faults.json', {point:fault})
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                result = json.loads(p.stdout)
+                self.assertEqual(result['reason'], reason)
+                current = self.pmc('show', 'continuity-demo')['data']
+                self.assertEqual(current['claim']['holder'], result['outcomes']['pm']['holder'])
+                self.assertEqual(current['task']['status'], 'in_progress')
+                calls = [json.loads(x) for x in (self.root / 'calls.jsonl').read_text().splitlines()]
+                self.assertEqual(calls.count(['browser', 'lease']), 1)
+                self.assertNotIn(['client', 'connect'], calls)
+                self.assertNotIn(['client', 'batch'], calls)
+                self.assertNotIn(['browser', 'release'], calls)
+                if fault == 'replace_holder':
+                    self.assertEqual(json.loads((self.root / 'fake-browser.json').read_text())['holder'], 'replacement')
+
     def test_two_consumers_have_one_winner_and_only_one_browser_read(self):
         first = self.invoke('produce')
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)

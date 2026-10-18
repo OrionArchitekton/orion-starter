@@ -32,6 +32,9 @@ lease = json.loads(state.read_text()) if state.exists() else None
 if kind == 'browser':
     code, data = 0, {}
     if command == 'status':
+        if fault == 'replace_holder' and lease:
+            lease['holder'] = 'replacement'
+            state.write_text(json.dumps(lease))
         if fault == 'lose_claim' and not (p / 'claim-swapped').exists():
             selected = json.loads((p / 'selection.json').read_text())['pm']
             prefix = [selected['executable'], '--json', '--home', selected['home']]
@@ -52,6 +55,8 @@ if kind == 'browser':
                  'port': 9001, 'expires_at': (datetime.now(timezone.utc) + timedelta(minutes=3)).isoformat()}
         if fault == 'bad_time':
             lease['expires_at'] = 'unparseable'
+        elif fault == 'short_lease':
+            lease['expires_at'] = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
         state.write_text(json.dumps(lease))
         state.chmod(0o600)
         data = lease
