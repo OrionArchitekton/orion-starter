@@ -482,6 +482,9 @@ class Profile:
         current = self.pm('show', self.s['pm']['task_id'])
         require(current['task']['status'] == 'todo' and current['claim']['state'] == 'absent', 'yield_not_observed')
         self.outcomes['pm']['state'] = 'yielded'
+        final_record = self.handoff('show', recorded['record_id'])
+        require(final_record.get('sha256') == recorded['sha256'] and final_record.get('current') is True
+                and final_record.get('record') == shown['record'], 'record_changed_at_yield')
         receipt = {'receipt_version': 1, 'run_id': self.run_id, 'producer_attempt_id': self.attempt,
                    'pm_store_id': self.s['pm']['store_id'], 'pm_task_id': self.s['pm']['task_id'],
                    'task_definition_sha256': self.s['pm']['task_definition_sha256'],

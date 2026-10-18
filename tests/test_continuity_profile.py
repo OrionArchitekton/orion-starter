@@ -176,6 +176,22 @@ class ContinuityTests(unittest.TestCase):
                 else:
                     self.assertEqual(path.stat().st_mode & 0o777, 0o755)
 
+    def test_successor_during_yield_cannot_emit_successful_receipt(self):
+        self.proxy('handoff')
+        self.write(self.root / 'faults.json', {'handoff:show': 'successor_after'})
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+        self.assertTrue((self.root / 'successor-injected').exists())
+        self.assertFalse((self.root / 'yield.json').exists())
+        current = self.pmc('show', 'continuity-demo')['data']
+        self.assertEqual(current['task']['status'], 'todo')
+        self.assertEqual(current['claim']['state'], 'absent')
+        status = subprocess.run([str(self.fake), '--json', 'status', 'contdemo'], capture_output=True, text=True)
+        self.assertEqual(status.returncode, 6, status.stdout + status.stderr)
+        self.assertEqual(json.loads(status.stdout)['data']['state'], 'down')
+        self.assertIsNone(json.loads(status.stdout)['data']['holder'])
+
     def test_malformed_lease_after_claim_remains_unknown(self):
         self.write(self.root / 'faults.json', {'browser:lease': 'bad_time'})
         p = self.invoke('produce')

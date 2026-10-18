@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import uuid
 
 p = Path(sys.argv[0]).parent
 kind = Path(sys.argv[0]).name.split('-')[0]
@@ -21,6 +22,14 @@ os.close(fd)
 if fault == 'before':
     raise SystemExit(1)
 result = subprocess.run([cfg[kind], *args], input=sys.stdin.buffer.read(), capture_output=True)
+if fault == 'successor_after' and not (p / 'successor-injected').exists():
+    record = json.loads(result.stdout)['data']['record']
+    successor = {k: v for k, v in record.items() if k not in ('record_id', 'created_at')}
+    successor.update(predecessor=record['record_id'], request_id=uuid.uuid4().hex,
+                     actor='synthetic-successor', last_observed_outcome='A newer synthetic observation.')
+    subprocess.run([cfg[kind], *args[:3], 'record', '--input', '-'],
+                   input=json.dumps(successor).encode(), capture_output=True, check=True)
+    (p / 'successor-injected').write_text('Injected once after the producer read-back.')
 if fault == 'after':
     os.kill(os.getpid(), signal.SIGKILL)
 if fault in ('boolean_api', 'bad_task', 'huge_digest', 'boolean_total', 'float_total', 'negative_total', 'missing_total', 'bad_pickup'):
