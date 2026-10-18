@@ -344,6 +344,7 @@ class Profile:
         require(task.get('task', {}).get('id') == self.s['pm']['task_id']
                 and definition(task['task']) == self.s['pm']['task_definition_sha256'], 'task_changed', 3)
         rows = self.handoff('list', '--task', self.key, '--limit', '50')
+        require(type(rows.get('matching_total')) is int and rows['matching_total'] >= 0, 'handoff_list_shape')
         return {'task_status': task['task']['status'], 'claim_state': task['claim']['state'],
                 'context_records': rows['matching_total']}
 

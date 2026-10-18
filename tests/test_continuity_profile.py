@@ -260,6 +260,19 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
         self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
 
+    def test_malformed_context_count_cannot_claim_or_browse(self):
+        for index, fault in enumerate(('boolean_total', 'float_total', 'negative_total', 'missing_total')):
+            with self.subTest(fault=fault):
+                if index:
+                    self.setUp()
+                self.proxy('handoff')
+                self.write(self.root / 'faults.json', {'handoff:list': fault})
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                self.assertEqual(json.loads(p.stdout)['reason'], 'handoff_list_shape')
+                self.assertEqual(self.pmc('show', 'continuity-demo')['data']['claim']['state'], 'absent')
+                self.assertFalse((self.root / 'calls.jsonl').exists())
+
     def test_unbounded_timing_configuration_is_refused_during_inspection(self):
         self.config.write_text('[timing]\nstart_limit_seconds = 999999999999\n' + self.config.read_text())
         self.value['browser']['config_sha256'] = digest(self.config)

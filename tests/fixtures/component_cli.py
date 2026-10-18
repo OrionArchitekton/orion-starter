@@ -23,12 +23,17 @@ if fault == 'before':
 result = subprocess.run([cfg[kind], *args], input=sys.stdin.buffer.read(), capture_output=True)
 if fault == 'after':
     os.kill(os.getpid(), signal.SIGKILL)
-if fault in ('boolean_api', 'bad_task', 'huge_digest'):
+if fault in ('boolean_api', 'bad_task', 'huge_digest', 'boolean_total', 'float_total', 'negative_total', 'missing_total'):
     value = json.loads(result.stdout)
     if fault == 'boolean_api':
         value['api_version'] = True
     elif fault == 'bad_task':
         value['data']['task'] = []
+    elif fault in ('boolean_total', 'float_total', 'negative_total', 'missing_total'):
+        if fault == 'missing_total':
+            value['data'].pop('matching_total', None)
+        else:
+            value['data']['matching_total'] = {'boolean_total': False, 'float_total': 0.0, 'negative_total': -1}[fault]
     else:
         value['data']['sha256'] = 'z' * 70000
     print(json.dumps(value))

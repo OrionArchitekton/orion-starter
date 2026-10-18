@@ -53,7 +53,7 @@
     "remote_hands": "Not included; active independent development",
     "continuity": {
       "path": "profiles/continuity/manifest.json",
-      "sha256": "cef0281b2c129739b1c13086bd06d7c6a6809cf7734747180acbdd6ed1a5e797"
+      "sha256": "1a7314a11cb55555fa64eb54adb44c8eb67ebd215d035682d8714d7ae0fbe8f6"
     }
   },
   "bootstrap": {
