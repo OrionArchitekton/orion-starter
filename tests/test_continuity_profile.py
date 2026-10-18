@@ -38,10 +38,10 @@ class ContinuityTests(unittest.TestCase):
         subprocess.run([str(self.handoff), '--json', '--store', str(self.root / 'handoff'), 'init'],
                        check=True, capture_output=True)
         self.fake = self.root / 'browser'
-        self.fake.write_text('#!' + sys.executable + '\nimport sys\nprint("orion-browser 0.1.0")\n')
+        self.fake.write_text('#!' + sys.executable + '\n' + (ROOT / 'tests/fixtures/native_cli.py').read_text())
         self.fake.chmod(0o700)
         self.client = self.root / 'client'
-        self.client.write_text('#!' + sys.executable + '\nprint("agent-browser 0.25.4")\n')
+        self.client.write_text('#!' + sys.executable + '\n' + (ROOT / 'tests/fixtures/native_cli.py').read_text())
         self.client.chmod(0o700)
         self.config = self.root / 'browser.toml'
         self.config.write_text('[paths]\nstate = "' + str(self.root / 'browser-state') +
@@ -100,6 +100,31 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
         self.assertEqual(p.stderr, '')
         self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+
+    def test_producer_yields_verified_context_without_completing_task(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        result = json.loads(p.stdout)
+        self.assertEqual(result['state'], 'yielded')
+        receipt = json.loads((self.root / 'yield.json').read_text())
+        self.assertEqual(receipt['run_id'], self.value['run_id'])
+        self.assertEqual(receipt['resource_stop'], 'clean')
+        self.assertEqual(receipt['pm_yield'], {'task_status': 'todo', 'claim_state': 'absent'})
+        current = self.pmc('show', 'continuity-demo')['data']
+        self.assertEqual(current['task']['status'], 'todo')
+        self.assertEqual(current['claim']['state'], 'absent')
+        p = subprocess.run([str(self.handoff), '--json', '--store', str(self.root / 'handoff'),
+                            'pickup', '--task', receipt['handoff_task_key']], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertEqual(json.loads(p.stdout)['data']['selected_record_id'], receipt['record_id'])
+
+    def test_malformed_lease_after_claim_remains_unknown(self):
+        self.write(self.root / 'faults.json', {'browser:lease': 'bad_time'})
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+        self.assertEqual(self.pmc('show', 'continuity-demo')['data']['task']['status'], 'in_progress')
+        self.assertFalse((self.root / 'yield.json').exists())
 
 
 if __name__ == '__main__':

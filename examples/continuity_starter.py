@@ -10,11 +10,11 @@ import selectors
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 import tomllib
 import uuid
+from urllib.parse import urlparse
 
 
 class Refusal(Exception):
@@ -107,6 +107,39 @@ def read_private(path, root):
 
 def definition(task):
     return sha(wire({k: task.get(k) for k in ('id', 'project', 'title', 'description', 'next_action')}))
+
+
+def stamp():
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def private_dir(path, root):
+    owned(path, root)
+    if not path.exists():
+        path.mkdir(mode=0o700)
+    require(path.is_dir() and stat.S_IMODE(path.stat().st_mode) == 0o700, 'non_private_directory')
+
+
+def durable_file(path, value, root, replace=False):
+    owned(path, root, file=path.exists())
+    raw = wire(value) + b'\n'
+    require(len(raw) <= 65536, 'receipt_limit')
+    target = path.with_name(path.name + '.' + uuid.uuid4().hex) if replace else path
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+        if replace:
+            os.replace(target, path)
+        directory = os.open(path.parent, os.O_DIRECTORY | os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError:
+        raise Refusal('receipt_write_unknown') from None
 
 
 def bounded_command(argv, env, limit, timeout=10, input_bytes=b''):
@@ -204,13 +237,46 @@ class Profile:
         self.run_id, self.attempt = self.s['run_id'], uuid.uuid4().hex
         self.key = 'pm1-' + sha(wire(['orion-starter-continuity', 1, self.s['pm']['store_id'], self.s['pm']['task_id']]))
         self.failed_operation = None
+        self.journal = None
+        self.operations = 0
+        self.outcomes = {}
+        self.claim = None
+        self.holder = 'cont-' + self.attempt
+        self.resource = None
+
+    def begin(self):
+        parent = self.root / 'receipts'
+        private_dir(parent, self.root)
+        self.journal = parent / self.attempt
+        private_dir(self.journal, self.root)
+        durable_file(self.journal / 'attempt.json', {'run_id': self.run_id, 'attempt_id': self.attempt,
+                                                    'holder': self.holder}, self.root)
+
+    def execute(self, component, command, argv, limit, timeout=10, input_bytes=b''):
+        self.failed_operation = component + ':' + command
+        record, path = None, None
+        if self.journal:
+            require(self.operations < 64 and sum(p.stat().st_size for p in self.journal.iterdir()) < 900000,
+                    'receipt_budget')
+            self.operations += 1
+            path = self.journal / f'{self.operations:02d}.json'
+            record = {'operation_id': uuid.uuid4().hex, 'component': component, 'command': command,
+                      'state': 'intent', 'at': stamp(), 'arguments_sha256': sha(wire(argv[1:])),
+                      'input_sha256': sha(input_bytes), 'handles': self.outcomes}
+            durable_file(path, record, self.root)
+        code, raw, err = bounded_command(argv, self.env, limit, timeout, input_bytes)
+        if record:
+            record = {**record, 'state': 'returned', 'exit': code, 'stdout_sha256': sha(raw),
+                      'stdout_bytes': len(raw), 'stderr_sha256': sha(err), 'stderr_bytes': len(err)}
+            durable_file(path, record, self.root, replace=True)
+        return code, raw, err
 
     def pm(self, *args):
         request = uuid.uuid4().hex
         self.failed_operation = 'pm:' + args[0]
-        code, raw, _ = bounded_command([self.s['pm']['executable'], '--json', '--home', self.s['pm']['home'],
+        code, raw, _ = self.execute('pm', args[0], [self.s['pm']['executable'], '--json', '--home', self.s['pm']['home'],
                                        '--request-id', request, '--api-version', '1', *map(str, args)],
-                                      self.env, 8 * 1024 * 1024)
+                                      8 * 1024 * 1024)
         result = strict_json(raw, 8 * 1024 * 1024)
         require(isinstance(result, dict) and result.get('api_version') == 1 and result.get('request_id') == request
                 and result.get('command') == (' '.join(args[:2]) if args[0] == 'evidence' else args[0]), 'pm_envelope')
@@ -226,8 +292,8 @@ class Profile:
 
     def handoff(self, *args, input_bytes=b''):
         self.failed_operation = 'handoff:' + args[0]
-        code, raw, _ = bounded_command([self.s['handoff']['executable'], '--store', self.s['handoff']['store'],
-                                       '--json', *map(str, args)], self.env, 524288, input_bytes=input_bytes)
+        code, raw, _ = self.execute('handoff', args[0], [self.s['handoff']['executable'], '--store', self.s['handoff']['store'],
+                                       '--json', *map(str, args)], 524288, input_bytes=input_bytes)
         result = strict_json(raw, 524288)
         require(isinstance(result, dict) and result.get('interface_version') == 1 and result.get('authority') == 'none'
                 and result.get('command') == ('version' if args[0] == '--version' else args[0]), 'handoff_envelope')
@@ -253,6 +319,145 @@ class Profile:
         return {'task_status': task['task']['status'], 'claim_state': task['claim']['state'],
                 'context_records': rows['matching_total']}
 
+    def current_claim(self):
+        data = self.pm('show', self.s['pm']['task_id'])
+        c = data.get('claim', {})
+        require(data.get('task', {}).get('id') == self.s['pm']['task_id']
+                and definition(data['task']) == self.s['pm']['task_definition_sha256']
+                and data['task']['status'] == 'in_progress'
+                and c.get('state') == 'live' and c.get('holder') == self.holder
+                and self.claim is not None and c.get('generation') == self.claim['generation'], 'claim_changed', 3)
+        return data
+
+    def acquire(self):
+        coverage = self.pm('probe', self.s['pm']['task_id'])
+        require(coverage.get('coverage') in ('clear', 'matches'), 'coverage_unknown')
+        data = self.pm('claim', self.s['pm']['task_id'], '--holder', self.holder, '--ttl-hours', '1')
+        self.claim = data.get('claim', {})
+        require(isinstance(self.claim.get('generation'), str)
+                and re.fullmatch('[0-9a-f]{32}', self.claim['generation']), 'claim_result')
+        self.outcomes['pm'] = {'holder': self.holder, 'generation': self.claim['generation'], 'state': 'claimed'}
+        self.current_claim()
+
+    def browser(self, command, *args):
+        require(sha(read_private(absolute(self.s['browser']['config']), self.root)) ==
+                self.s['browser']['config_sha256'], 'config_changed', 3)
+        timing = self.config.get('timing', {})
+        timeout = 615 + 2 * timing.get('start_limit_seconds', 30) + timing.get('service_stop_timeout_seconds', 30)
+        code, raw, _ = self.execute('browser', command, [self.s['browser']['executable'], '--json',
+                                   command, self.s['browser']['name'], *args], 524288, timeout)
+        result = strict_json(raw, 524288)
+        require(isinstance(result, dict) and result.get('exit') == code
+                and result.get('ok') is (code == 0) and result.get('code') == {0: 'OK', 3: 'BUSY', 4: 'NOT_HOLDER',
+                    6: 'BROWSER_DOWN', 7: 'UNHEALTHY', 1: 'INTERNAL', 2: 'USAGE'}.get(code)
+                and isinstance(result.get('data'), dict), 'browser_envelope')
+        require(code == 0 or (command == 'status' and code == 6), 'browser_refused', 3 if code in (3, 4) else 7)
+        data = result['data']
+        require(data.get('browser') == self.s['browser']['name'], 'browser_identity')
+        return data
+
+    def native_owner(self):
+        self.current_claim()
+        data = self.browser('status')
+        require(data.get('holder') == self.holder and data.get('state') == 'healthy'
+                and data.get('expires_at') == self.resource['expires_at'] and data.get('expired') is False,
+                'resource_changed', 3)
+        expires = datetime.fromisoformat(data['expires_at'])
+        require((expires - datetime.now(timezone.utc)).total_seconds() > 45, 'resource_expiring', 3)
+
+    def client(self, command, *args):
+        require(sha(read_private(absolute(self.s['client']['config']), self.root)) ==
+                self.s['client']['config_sha256'], 'config_changed', 3)
+        code, raw, _ = self.execute('client', command, [self.s['client']['executable'], '--session', self.holder,
+                                   '--config', self.s['client']['config'], '--json', command, *args], 524288, 35)
+        result = strict_json(raw, 524288)
+        require(code == 0, 'client_unknown')
+        if command != 'batch':
+            require(isinstance(result, dict) and result.get('success') is True
+                    and result.get('error') is None and isinstance(result.get('data'), dict), 'client_envelope')
+            require(result['data'].get('launched' if command == 'connect' else 'closed') is True, 'client_result')
+        return result
+
+    def observe(self):
+        self.current_claim()
+        before = self.browser('status')
+        require(before.get('state') == 'down' and before.get('holder') is None, 'resource_not_free', 3)
+        self.resource = self.browser('lease', '--holder', self.holder, '--minutes', '3')
+        r = self.resource
+        require(r.get('holder') == self.holder and isinstance(r.get('session'), str)
+                and 1 <= len(r['session']) <= 128, 'resource_grant')
+        endpoint = urlparse(r.get('endpoint', ''))
+        require(endpoint.scheme == 'ws' and endpoint.hostname == '127.0.0.1' and endpoint.port == r.get('port')
+                and endpoint.username is None and endpoint.password is None and not endpoint.query
+                and not endpoint.fragment and endpoint.path.startswith('/devtools/browser/'), 'resource_endpoint')
+        self.outcomes['browser'] = {'holder': self.holder, 'session': r['session'], 'state': 'leased'}
+        private_dir(self.root / 'client-sockets', self.root)
+        self.native_owner()
+        self.client('connect', r['endpoint'])
+        self.native_owner()
+        result = self.client('batch', '--bail', 'open https://example.com/', 'get title', 'get url')
+        expected = [(['open', 'https://example.com/'], {'title': 'Example Domain', 'url': 'https://example.com/'}),
+                    (['get', 'title'], {'title': 'Example Domain'}), (['get', 'url'], {'url': 'https://example.com/'})]
+        require(isinstance(result, list) and len(result) == len(expected), 'read_shape')
+        for item, (command, value) in zip(result, expected):
+            require(isinstance(item, dict) and item.get('command') == command and item.get('success') is True
+                    and item.get('error') is None and item.get('result') == value, 'read_result')
+        observed_at = stamp()
+        self.native_owner()
+        released = self.browser('release', '--holder', self.holder)
+        require(released.get('stop') == 'clean', 'release_not_clean')
+        self.outcomes['browser']['state'] = 'released'
+        self.client('close')
+        down = self.browser('status')
+        require(down.get('state') == 'down' and down.get('holder') is None, 'resource_not_down')
+        self.outcomes['browser']['state'] = 'clean_down'
+        return {'sha256': sha(wire({'title': 'Example Domain', 'url': 'https://example.com/'})),
+                'observed_at': observed_at}
+
+    def produce(self):
+        require(not (self.root / 'yield.json').exists(), 'yield_already_exists', 3)
+        self.begin()
+        self.acquire()
+        observation = self.observe()
+        body = {'binding_version': 1, 'run_id': self.run_id, 'pm_store_id': self.s['pm']['store_id'],
+                'pm_task_id': self.s['pm']['task_id'], 'task_definition_sha256': self.s['pm']['task_definition_sha256'],
+                'producer_claim_generation': self.claim['generation'], 'producer_observation_sha256': observation['sha256']}
+        value = {'record_version': 1, 'task_key': self.key, 'predecessor': None,
+                 'project_key': 'starter-' + self.run_id, 'title': 'Synthetic page continuation', 'status': 'active',
+                 'actor': self.holder, 'request_id': self.attempt, 'context_as_of': observation['observed_at'],
+                 'last_observed_outcome': 'Example Domain at https://example.com/; native browser released cleanly.',
+                 'unfinished_step': 'Independently observe the page and clean up before task completion.',
+                 'recorded_next_step': 'Review the current request, then obtain new task and browser ownership.',
+                 'remaining_authority': 'none; consult the current request',
+                 'acceptance_claims': [{'baseline': 'starter-synthetic-read-v1', 'reference': 'https://example.com/',
+                                        'accepted_at': observation['observed_at']}],
+                 'evidence': [{'source': 'starter-producer', 'artifact': 'sha256:' + observation['sha256'],
+                               'observed_at': observation['observed_at'], 'scope': 'Synthetic page read and clean release.',
+                               'reference': 'https://example.com/'}], 'body': wire(body).decode()}
+        self.current_claim()
+        recorded = self.handoff('record', '--input', '-', input_bytes=wire(value))
+        shown = self.handoff('show', recorded['record_id'])
+        require(shown.get('sha256') == recorded.get('sha256') and shown.get('current') is True
+                and {k: v for k, v in shown['record'].items() if k not in ('record_id', 'created_at')} == value,
+                'record_readback')
+        self.outcomes['handoff'] = {'record_id': recorded['record_id'], 'sha256': recorded['sha256'], 'state': 'verified'}
+        data = self.current_claim()
+        self.pm('release', self.s['pm']['task_id'], '--holder', self.holder, '--generation', self.claim['generation'],
+                '--expect-revision', data['task']['revision'])
+        current = self.pm('show', self.s['pm']['task_id'])
+        require(current['task']['status'] == 'todo' and current['claim']['state'] == 'absent', 'yield_not_observed')
+        self.outcomes['pm']['state'] = 'yielded'
+        receipt = {'receipt_version': 1, 'run_id': self.run_id, 'producer_attempt_id': self.attempt,
+                   'pm_store_id': self.s['pm']['store_id'], 'pm_task_id': self.s['pm']['task_id'],
+                   'task_definition_sha256': self.s['pm']['task_definition_sha256'],
+                   'producer_generation': self.claim['generation'], 'producer_holder': self.holder,
+                   'browser_session': self.resource['session'], 'handoff_task_key': self.key,
+                   'handoff_store_role': 'selected_handoff', 'record_id': recorded['record_id'],
+                   'record_sha256': recorded['sha256'], 'observation': observation, 'resource_stop': 'clean',
+                   'client_closed': True, 'browser_down': True, 'pm_yield': {'task_status': 'todo', 'claim_state': 'absent'}}
+        durable_file(self.root / 'yield.json', receipt, self.root)
+        return self.outcomes
+
 
 class Parser(argparse.ArgumentParser):
     def error(self, message):
@@ -273,14 +478,18 @@ def main():
         profile = Profile(args.selection)
         output.update(run_id=profile.run_id, attempt_id=profile.attempt, mode=mode)
         outcomes = profile.inspect()
-        require(mode == 'inspect', 'mode_not_implemented', 3)
-        output.update(state='inspected', outcomes=outcomes, failed_operation=None)
+        if mode == 'produce':
+            require(outcomes['context_records'] == 0, 'context_already_exists', 3)
+            outcomes = profile.produce()
+        else:
+            require(mode == 'inspect', 'mode_not_implemented', 3)
+        output.update(state='yielded' if mode == 'produce' else 'inspected', outcomes=outcomes, failed_operation=None)
         code = 0
     except (Refusal, OSError, ValueError, KeyError, TypeError) as exc:
-        fault = exc if isinstance(exc, Refusal) else Refusal('invalid_selection_or_unavailable', 2)
+        fault = exc if isinstance(exc, Refusal) else Refusal('invalid_selection_or_unavailable', 7 if profile else 2)
         code = fault.exit_code
         output.update(state='reconciliation_required' if code == 7 else 'refused', reason=fault.reason,
-                      failed_operation=profile.failed_operation if profile else None, outcomes={})
+                      failed_operation=profile.failed_operation if profile else None, outcomes=profile.outcomes if profile else {})
     print(wire(output).decode())
     return code
 
