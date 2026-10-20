@@ -1,5 +1,7 @@
 """Controlled faults around a real selected public command, for process-seam tests."""
 import json
+import base64
+import copy
 import os
 from pathlib import Path
 import signal
@@ -68,6 +70,34 @@ if fault == 'wrong_count':
 if fault == 'wrong_path_label':
     value = json.loads(p.stdout)
     value['worktrees'][0]['root']['path_utf8'] = '/unselected/display'
+    p.stdout = json.dumps(value).encode() + b'\n'
+if fault == 'foreign_repository':
+    value = json.loads(p.stdout)
+    foreign_id = 'sha256:' + 'f' * 64
+    def fake_path(text):
+        return {'path_b64': base64.b64encode(text.encode()).decode(), 'path_utf8': text}
+    repository = copy.deepcopy(value['repositories'][0])
+    repository['repository_id'] = foreign_id
+    repository['common_directory'] = fake_path('/unselected/repository/.git')
+    value['repositories'].append(repository)
+    original = next(tree for tree in value['worktrees'] if tree['dirty_paths'])
+    pair = []
+    for marker in ('d', 'e'):
+        tree = copy.deepcopy(original)
+        tree['repository_id'] = foreign_id
+        tree['worktree_id'] = 'sha256:' + marker * 64
+        tree['root'] = fake_path('/unselected/repository/' + marker)
+        pair.append(tree['worktree_id'])
+        value['worktrees'].append(tree)
+    overlap = copy.deepcopy(config['overlap_template'])
+    overlap.update(id='sha256:' + 'c' * 64, repository_id=foreign_id, worktree_ids=sorted(pair))
+    value['overlaps'] = [overlap]
+    for key in ('repositories_selected', 'repositories_discovered'):
+        value['coverage'][key] += 1
+    for key in ('registered_worktrees', 'worktrees_observed'):
+        value['coverage'][key] += 2
+    value.update(conclusion='overlap_observed', exit=1)
+    p.returncode = 1
     p.stdout = json.dumps(value).encode() + b'\n'
 if fault == 'missing_capability':
     value = json.loads(p.stdout)

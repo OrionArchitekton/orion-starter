@@ -514,6 +514,8 @@ class Profile:
                 need(x['repository_id'] in repos, 'report_input_repository')
             else:
                 problem(x['problem'])
+        need(set(repos) == {x['repository_id'] for x in r['inputs'] if x['repository_id'] is not None},
+             'report_input_repository')
         need(c['repositories_selected'] == len(repos) + sum(x['repository_id'] is None for x in r['inputs']), 'report_selected_count')
         for x in repos.values():
             path(x['common_directory'])

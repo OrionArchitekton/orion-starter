@@ -319,6 +319,35 @@ class EvidenceTests(unittest.TestCase):
                 self.assertLessEqual(len(p.stdout), 65536)
                 self.assertEqual(p.stderr, b'')
 
+    def test_unselected_repository_overlap_cannot_complete(self):
+        # Two explicit roots can legitimately resolve to one common repository.
+        self.value['reporter']['repositories'].append(str(self.workers[0]))
+        self.write(self.selection, self.value)
+        proxy = self.proxy('reporter', 'scan', None)
+        produced = self.invoke('produce')
+        self.assertEqual(produced.returncode, 0, produced.stdout + produced.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_bytes())
+        report = json.loads((self.root / 'receipts' / receipt['producer_attempt_id'] / 'report.raw').read_bytes())
+        self.assertEqual((len(report['inputs']), len(report['repositories'])), (2, 1))
+        self.assertEqual(report['coverage']['repositories_selected'], 1)
+        self.git('restore', 'shared.txt', cwd=self.workers[1])
+        config_path = Path(str(proxy) + '.json')
+        config = json.loads(config_path.read_bytes())
+        config.update(fault='foreign_repository', overlap_template=report['overlaps'][0])
+        self.write(config_path, config)
+        consumed = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(consumed.returncode, 7, consumed.stdout + consumed.stderr)
+        reply = json.loads(consumed.stdout)
+        self.assertEqual(reply['reason'], 'report_not_established')
+        self.assertIsNone(reply['outcomes']['capture'])
+        task = self.pmc('show', self.task_id)['data']['task']
+        self.assertNotEqual(task['status'], 'done')
+        self.assertEqual(task['evidence'], [])
+        self.assertEqual(len(list((self.root / 'results').iterdir())), 1)
+        diagnostic = json.loads((self.root / 'receipts' / reply['attempt_id'] / 'diagnostic-report.raw').read_bytes())
+        self.assertEqual((len(diagnostic['inputs']), len(diagnostic['repositories'])), (2, 2))
+        self.assertEqual(diagnostic['overlaps'][0]['repository_id'], 'sha256:' + 'f' * 64)
+
     def test_internal_error_retains_bounded_private_diagnostics(self):
         self.proxy('reporter', 'scan', 'exit70')
         p = self.invoke('produce')
