@@ -180,4 +180,21 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotEqual(result['outcomes']['observation']['scan_id'], old['observation']['scan_id'])
         state = self.pmc('show', self.task_id)['data']
         self.assertEqual((state['task']['status'], state['claim']['state']), ('done', 'absent'))
-        self.assertEqual(state['task']['evidence'][-1]['reference'], result['outcomes']['capture']['reference'])
+        self.assertEqual(state['task']['evidence'][-1]['ref'], result['outcomes']['capture']['reference'])
+
+    def test_historical_capture_survives_fixture_change(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_bytes())
+        from orion_results import read
+        slot = self.root / 'results' / receipt['result']['slot']
+        old = read(slot, receipt['result']['reference'])
+        self.git('restore', 'shared.txt', cwd=self.workers[1])
+        p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        reply = json.loads(p.stdout)
+        self.assertEqual(reply['reason'], 'fresh_observation_does_not_meet_goal')
+        self.assertEqual(reply['outcomes']['observation']['conclusion'], 'no_overlap_observed')
+        self.assertEqual(read(slot, receipt['result']['reference']), old)
+        state = self.pmc('show', self.task_id)['data']
+        self.assertEqual((state['task']['status'], state['claim']['state']), ('todo', 'absent'))

@@ -535,6 +535,118 @@ class Profile:
         self.checkpoint('yielded')
         return self.reply('yielded')
 
+    def yield_binding(self, receipt):
+        keys(receipt, 'receipt_version profile run_id producer_attempt_id selection_sha256 repositories_sha256 pm result observation context pm_yield')
+        need(type(receipt['receipt_version']) is int and receipt['receipt_version'] == 1 and receipt['profile'] == PROFILE
+             and receipt['run_id'] == self.s['run_id'] and receipt['selection_sha256'] == sha(wire(self.s))
+             and receipt['repositories_sha256'] == sha(wire(sorted(set(self.s['reporter']['repositories']))))
+             and receipt['pm_yield'] == {'task_status': 'todo', 'claim_state': 'absent'}, 'yield_identity', 3)
+        uid(receipt['producer_attempt_id'])
+        keys(receipt['pm'], 'store_id task_id task_definition_sha256 producer_generation')
+        need(all(receipt['pm'][k] == self.s['pm'][k] for k in ('store_id', 'task_id', 'task_definition_sha256'))
+             and isinstance(receipt['pm']['producer_generation'], str)
+             and re.fullmatch('[0-9a-f]{32}', receipt['pm']['producer_generation']), 'yield_task', 3)
+        keys(receipt['result'], 'slot reference')
+        need(receipt['result']['slot'] == receipt['producer_attempt_id'], 'yield_slot', 3)
+        reference = receipt['result']['reference']
+        need(isinstance(reference, str) and re.fullmatch(r'r1:[0-9a-f]{32}:[0-9a-f]{64}:(0|[1-9][0-9]{0,6})', reference), 'yield_reference', 3)
+        obs = receipt['observation']
+        keys(obs, 'interface_version package_version scan_id stdout_sha256 stdout_bytes exit coverage conclusion started_at finished_at')
+        need(type(obs['stdout_bytes']) is int and 0 < obs['stdout_bytes'] <= 1048576
+             and reference.split(':')[2:] == [obs['stdout_sha256'], str(obs['stdout_bytes'])], 'yield_content_identity', 3)
+        keys(receipt['context'], 'record_id sha256')
+        uid(receipt['context']['record_id'])
+        need(isinstance(receipt['context']['sha256'], str) and re.fullmatch('[0-9a-f]{64}', receipt['context']['sha256']), 'context_digest', 3)
+        return {'binding_version': 1, **{k: receipt[k] for k in ('profile', 'run_id', 'producer_attempt_id',
+                'selection_sha256', 'repositories_sha256', 'pm', 'result', 'observation')}}
+
+    def pickup(self, receipt, binding):
+        picked = self.handoff('pickup', '--task', self.key, '--max-age-seconds', '86400')
+        need(picked.get('match') == 'task' and picked.get('integrity') == 'valid' and picked.get('recency') == 'within_window'
+             and picked.get('acceptance') == 'recorded' and picked.get('disposition') == 'context_available'
+             and picked.get('task_key') == self.key and picked.get('selected_record_id') == receipt['context']['record_id']
+             and picked.get('reasons') == [], 'pickup_refused', 3)
+        shown = self.handoff('show', receipt['context']['record_id'])
+        r = shown['record']
+        native_bytes = (json.dumps(r, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode('utf-8')
+        obs = receipt['observation']
+        need(shown.get('current') is True and shown.get('sha256') == receipt['context']['sha256'] == sha(native_bytes)
+             and picked.get('record') == r and r.get('record_id') == receipt['context']['record_id']
+             and r.get('task_key') == self.key and r.get('status') == 'active' and r.get('predecessor') is None
+             and r.get('project_key') == 'starter-development-evidence-' + self.s['run_id']
+             and r.get('actor') == 'dev-evidence-' + receipt['producer_attempt_id'].replace('-', '')
+             and isinstance(r.get('body'), str) and r['body'].encode('utf-8') == wire(binding), 'context_binding', 3)
+        now = datetime.now(timezone.utc)
+        need(utc(obs['started_at']) <= utc(obs['finished_at']) == utc(r['context_as_of']) <= utc(r['created_at']) <= now
+             and (now-utc(r['context_as_of'])).total_seconds() <= 86400, 'context_time', 3)
+        acceptance = r.get('acceptance_claims')
+        need(isinstance(acceptance, list) and len(acceptance) == 1, 'capture_acceptance', 3)
+        a = acceptance[0]
+        need(isinstance(a, dict) and set(a) == {'baseline', 'reference', 'accepted_at'}
+             and a['baseline'] == 'starter-development-evidence-capture-v1' and a['reference'] == receipt['result']['reference']
+             and utc(obs['finished_at']) <= utc(a['accepted_at']) <= utc(r['created_at']), 'capture_acceptance', 3)
+        evidence = r.get('evidence')
+        need(isinstance(evidence, list) and len(evidence) == 1 and evidence[0] == {
+            'source': 'orion-worktree-report/0.1.0', 'artifact': 'sha256:' + obs['stdout_sha256'],
+            'reference': receipt['result']['reference'], 'observed_at': r['context_as_of'],
+            'scope': 'registered-worktrees/dirty-paths; ' + obs['coverage']}
+            and r.get('remaining_authority') == 'none; consult the current request', 'capture_evidence', 3)
+        self.outcomes['context'] = {**receipt['context'], 'state': 'verified'}
+
+    def recover(self, receipt, name):
+        slot = receipt['result']['slot']
+        root = Path(self.s['results']['root']) / slot
+        private_dir(root)
+        destination = self.journal / name
+        meta = self.results('read', root=str(root), reference=receipt['result']['reference'], output=str(destination))
+        raw = read_private(destination, self.root, 1048576)
+        obs = receipt['observation']
+        need(meta['reference'] == receipt['result']['reference'] and len(raw) == obs['stdout_bytes']
+             and sha(raw) == obs['stdout_sha256'], 'historical_capture_changed', 3)
+        r = self.report(raw, obs['exit'])
+        need(all(r[k] == obs[k] for k in ('scan_id', 'started_at', 'finished_at', 'conclusion'))
+             and r['coverage']['status'] == obs['coverage'], 'historical_observation_changed', 3)
+
+    def consume(self, path):
+        receipt = strict(read_private(path, self.root))
+        binding = self.yield_binding(receipt)
+        self.pickup(receipt, binding)
+        self.begin()
+        self.recover(receipt, 'historical.raw')
+        current = self.pm('show', self.s['pm']['task_id'])
+        need(current['task']['status'] == 'todo' and current['claim']['state'] == 'absent', 'task_not_available', 3)
+        self.acquire()
+        need(self.claim['generation'] != receipt['pm']['producer_generation'], 'reused_generation')
+        self.pickup(receipt, binding)
+        self.recover(receipt, 'historical-after-claim.raw')
+        raw = self.observe()
+        self.capture(raw)
+        obs = self.outcomes['observation']
+        if obs['coverage'] != 'complete' or obs['conclusion'] != 'overlap_observed':
+            self.release()
+            raise Stop('fresh_observation_does_not_meet_goal', 3)
+        evidence = {'id': 'development-evidence-' + self.attempt, 'source': 'starter-consumer',
+                    'artifact': 'sha256:' + obs['stdout_sha256'], 'observed_at': obs['finished_at'],
+                    'scope': 'Independent complete positive dirty-path overlap observation; no merge-safety claim.',
+                    'ref': self.outcomes['capture']['reference']}
+        self.save(self.journal / 'evidence.json', wire(evidence))
+        self.pickup(receipt, binding)
+        data = self.owned()
+        flags = ['--holder', self.holder, '--generation', self.claim['generation']]
+        attached = self.pm('evidence', 'attach', self.s['pm']['task_id'], '--input', str(self.journal / 'evidence.json'),
+                           '--expect-revision', data['task']['revision'], *flags)
+        data = self.owned()
+        self.pickup(receipt, binding)
+        need(data['task']['revision'] == attached['task']['revision'], 'revision_changed', 3)
+        self.pm('transition', self.s['pm']['task_id'], 'done', '--expect-revision', data['task']['revision'], *flags)
+        final = self.pm('show', self.s['pm']['task_id'])
+        need(final['task']['status'] == 'done' and final['claim']['state'] == 'absent'
+             and evidence in final['task']['evidence'], 'completion_not_observed')
+        self.outcomes['task']['state'] = 'completed'
+        self.checkpoint('completed')
+        self.save(self.journal / 'completed.json', wire(self.reply('completed')))
+        return self.reply('completed')
+
     def reply(self, state, reason=None):
         return {'profile_interface_version': 1, 'profile': PROFILE, 'mode': self.mode, 'run_id': self.s['run_id'],
                 'attempt_id': self.attempt, 'state': state, 'reason': reason,
@@ -555,6 +667,8 @@ def main():
         profile.inspect()
         if args.mode == 'produce':
             reply = profile.produce()
+        elif args.mode == 'continue':
+            reply = profile.consume(absolute(args.yield_receipt))
         else:
             need(args.mode == 'inspect', 'mode_not_implemented', 3)
             reply = profile.reply('inspected')
