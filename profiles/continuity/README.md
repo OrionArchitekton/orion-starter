@@ -1,6 +1,6 @@
 # PM + browser + Handoff continuity preview
 
-Orion starter 0.2.0-rc.1. One worker yields observed context; another obtains its own task claim and browser lease before continuing. Components remain independently usable.
+Orion starter 0.3.0-rc.1. One worker yields observed context; another obtains its own task claim and browser lease before continuing. Components remain independently usable. Component pins and executable examples are unchanged from 0.2.0-rc.1.
 
 Support is limited to the CPython 3.11, Linux x86_64, systemd-user environment in the release receipt, with native proof on WSL2/ext4. This preview does not establish native Windows/macOS, account access, cross-host fencing, vendor hooks or stable newcomer onboarding.
 

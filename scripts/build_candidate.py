@@ -19,7 +19,9 @@ README.md
 RUNBOOK.md
 bootstrap-requirements.txt
 docs/plans/2026-10-17-starter-continuity-release-plan.md
+docs/plans/2026-10-19-starter-development-evidence-release-plan.md
 docs/runbooks/starter-continuity.md
+docs/runbooks/starter-development-evidence.md
 driver/package-lock.json
 driver/package.json
 examples/browser_starter.py
@@ -31,17 +33,29 @@ profiles/continuity/README.md
 profiles/continuity/manifest.json
 profiles/continuity/requirements.in
 profiles/continuity/requirements.lock
+profiles/development-evidence/README.md
+profiles/development-evidence/THIRD_PARTY_NOTICES.md
+profiles/development-evidence/manifest.json
+profiles/development-evidence/requirements.in
+profiles/development-evidence/requirements.lock
+profiles/development-evidence/installer.lock
+profiles/development-evidence/run.py
+profiles/development-evidence/results_io.py
 requirements.in
 requirements.lock
 scripts/build_candidate.py
 scripts/check_profile.py
 specs/starter-continuity-spec.md
+specs/starter-development-evidence-spec.md
 tests/fixtures/component_cli.py
 tests/fixtures/native_cli.py
+tests/fixtures/evidence_component.py
 tests/test_continuity_profile.py
+tests/test_development_evidence.py
 tests/test_packaging.py
 validation.json
 validation/pm-browser-rc2.json
+validation/development-evidence-0.3.0-rc.1.json
 '''.split())
 
 
@@ -68,13 +82,13 @@ def build(source, output):
     with os.fdopen(fd, 'wb') as target:
         with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             for name in sorted(FILES):
-                info = zipfile.ZipInfo('orion-starter-0.2.0-rc.1/' + name, (2026, 1, 1, 0, 0, 0))
+                info = zipfile.ZipInfo('orion-starter-0.3.0-rc.1/' + name, (2026, 1, 1, 0, 0, 0))
                 info.create_system = 3
                 info.external_attr = 0o100644 << 16
                 archive.writestr(info, blobs[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
         target.flush()
         os.fsync(target.fileno())
-    return {'version': '0.2.0-rc.1', 'source_commit': commit, 'members': len(FILES),
+    return {'version': '0.3.0-rc.1', 'source_commit': commit, 'members': len(FILES),
             'archive': str(output), 'sha256': hashlib.sha256(Path(output).read_bytes()).hexdigest()}
 
 

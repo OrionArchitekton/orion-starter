@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "distribution": "orion-starter",
+  "version": "0.3.0-rc.1",
+  "profile": "development-evidence",
+  "profile_interface_version": 1,
+  "status": "preview release candidate",
+  "components": [
+    {
+      "name": "orion-pm",
+      "version": "0.1.1",
+      "url": "https://github.com/OrionArchitekton/orion-pm-oss/releases/download/v0.1.1/orion_pm-0.1.1-py3-none-any.whl",
+      "sha256": "54f28272550054c32958c67fd84094b825bb387f91ad3efe3b342d463b9c16c7",
+      "license": "MIT"
+    },
+    {
+      "name": "orion-handoff",
+      "version": "0.1.0",
+      "url": "https://github.com/OrionArchitekton/orion-handoff/releases/download/v0.1.0/orion_handoff-0.1.0-py3-none-any.whl",
+      "sha256": "e1f3e1e43839cfd2896cfc553bef9366867c1cf50bce1e4d4762cdbec9977e41",
+      "license": "MIT"
+    },
+    {
+      "name": "orion-results",
+      "version": "0.1.0",
+      "url": "https://github.com/OrionArchitekton/orion-results/releases/download/v0.1.0/orion_results-0.1.0-py3-none-any.whl",
+      "sha256": "67af57c4deda8967db83c2176642184bb3b7fb59f826539284086efa95e78e2e",
+      "license": "MIT"
+    },
+    {
+      "name": "orion-worktree-report",
+      "version": "0.1.0",
+      "url": "https://github.com/OrionArchitekton/orion-worktree-report/releases/download/v0.1.0/orion_worktree_report-0.1.0-py3-none-any.whl",
+      "sha256": "f06d7ca9d3fd1001b9bd16ed18a8ee7827727c09eeb4a535f41692723336550b",
+      "license": "MIT"
+    }
+  ],
+  "python_lock_path": "profiles/development-evidence/requirements.lock",
+  "python_lock_sha256": "ae19102a4e4713b91b209296f40dd3362ee9325e24a44064083a73cda337fe98",
+  "installer": {
+    "path": "profiles/development-evidence/installer.lock",
+    "sha256": "ca993306863bc89df9e3280001060b8bf59d751974eb47d16482279321f16f83",
+    "pip": "26.2.1"
+  },
+  "contracts": {
+    "pm_api": 1,
+    "pm_store": 1,
+    "handoff_interface": 1,
+    "handoff_store": 1,
+    "handoff_record": 1,
+    "results_reference": 1,
+    "worktree_report_interface": 1
+  },
+  "examples": [
+    {
+      "path": "profiles/development-evidence/run.py",
+      "sha256": "0b6f9a8a6a244275437666fc23353ed9c6bbb85cf0f3c0f025816d0a5c984ded"
+    },
+    {
+      "path": "profiles/development-evidence/results_io.py",
+      "sha256": "58af6b9b2b1d82ef8495b74bdf16dfa18e4b2274cc068c81ac2b88ec065d366f"
+    }
+  ],
+  "notices": [
+    {
+      "path": "profiles/development-evidence/THIRD_PARTY_NOTICES.md",
+      "sha256": "c8d4c4f38c11345fd00286b12da8e2fffb72bcf2bb8a01dd602fc173326c1a79"
+    }
+  ]
+}
