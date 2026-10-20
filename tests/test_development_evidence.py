@@ -257,8 +257,13 @@ class EvidenceTests(unittest.TestCase):
         result = json.loads(p.stdout)
         self.assertEqual(result['outcomes']['observation']['coverage'], 'partial')
         self.assertEqual(result['outcomes']['observation']['conclusion'], 'overlap_observed')
+        self.assertEqual(result['outcomes']['task']['state'], 'yielded')
         p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
         self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        refused = json.loads(p.stdout)
+        self.assertEqual(refused['outcomes']['task']['state'], 'released_unfinished')
+        saved = json.loads((self.root / 'receipts' / refused['attempt_id'] / 'attempt.json').read_bytes())
+        self.assertEqual(saved['outcomes']['task']['state'], 'released_unfinished')
         self.assertEqual(self.pmc('show', self.task_id)['data']['task']['status'], 'todo')
 
     def test_native_negative_partial_indeterminate_and_unavailable(self):

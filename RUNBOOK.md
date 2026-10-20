@@ -17,7 +17,8 @@ The native walkthrough needs a disposable anonymous browser on a supported host;
 
 The optional continuity profile uses its own full lock and the [continuity runbook](docs/runbooks/starter-continuity.md).
 Run `python scripts/check_profile.py`, install the continuity dependencies into an isolated environment,
-then run `python -m unittest discover -s tests -v` and `python -m compileall -q examples`.
+then run `python -m unittest discover -s tests -p test_continuity_profile.py -v`,
+`python -m unittest discover -s tests -p test_packaging.py -v` and `python -m compileall -q examples`.
 CI exercises installed PM/Handoff commands and deterministic native-driver fixtures; it does not run a browser.
 Native verification must use the exact extracted candidate archive and retain a separate receipt.
 

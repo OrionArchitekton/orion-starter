@@ -652,7 +652,7 @@ class Profile:
                 '--expect-revision', data['task']['revision'])
         data = self.pm('show', self.s['pm']['task_id'])
         need(data['task']['status'] == 'todo' and data['claim']['state'] == 'absent', 'yield_readback')
-        self.outcomes['task']['state'] = 'yielded'
+        self.outcomes['task']['state'] = 'yielded' if self.mode == 'produce' else 'released_unfinished'
         self.checkpoint()
 
     def produce(self):
