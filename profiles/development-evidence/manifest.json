@@ -54,11 +54,17 @@
   "examples": [
     {
       "path": "profiles/development-evidence/run.py",
-      "sha256": "7a4edc2ed7d8c8fdf3919f4d3c6d99d31095db94513418dc375c92fd93a97ab4"
+      "sha256": "41ef3f493cd36fd3647ed3f88b59c345678e1170c3d769fdaf29aeb9b7eaf9e9"
     },
     {
       "path": "profiles/development-evidence/results_io.py",
-      "sha256": "871e1afb06cb45918d13e86157d88ea373737aaa319a46124db17403b718730d"
+      "sha256": "38427419f4239d0e268442aaf789ec3e96198bfb7860e0b9e5b353f91b703f86"
+    }
+  ],
+  "notices": [
+    {
+      "path": "profiles/development-evidence/THIRD_PARTY_NOTICES.md",
+      "sha256": "c8d4c4f38c11345fd00286b12da8e2fffb72bcf2bb8a01dd602fc173326c1a79"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "distribution": "orion-starter",
-  "version": "0.2.0-rc.1",
+  "version": "0.3.0-rc.1",
   "status": "prerelease candidate",
   "profile": "PM + browser",
   "components": [
@@ -53,7 +53,11 @@
     "remote_hands": "Not included; active independent development",
     "continuity": {
       "path": "profiles/continuity/manifest.json",
-      "sha256": "9585fbcbf031af248d4aded1b8419f74279a7c0228eb0f2a1c7ddf2061dbeaad"
+      "sha256": "73e6fcb799c6dbf7a1e17b738da769decb77c243682cb4ed4fc46b5280d513cc"
+    },
+    "development-evidence": {
+      "path": "profiles/development-evidence/manifest.json",
+      "sha256": "8ea176f9247889cb38b9134e1a0f32e04ea3c43def35e8f95386af1d8ad2aea1"
     }
   },
   "bootstrap": {

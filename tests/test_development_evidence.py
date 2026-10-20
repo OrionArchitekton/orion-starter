@@ -525,3 +525,29 @@ class EvidenceTests(unittest.TestCase):
                 os.kill(pid, 9)
             except ProcessLookupError:
                 pass
+
+    def test_two_roots_of_same_repository_are_one_native_repository(self):
+        self.value['reporter']['repositories'].append(str(self.workers[0]))
+        self.write(self.selection, self.value)
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['outcomes']['observation']['coverage'], 'complete')
+
+    def test_nonregular_selection_is_refused_without_blocking(self):
+        self.selection.unlink()
+        os.mkfifo(self.selection, 0o600)
+        p = subprocess.run([sys.executable, '-I', '-B', str(ENTRY), 'inspect', '--selection', str(self.selection)],
+                           capture_output=True, timeout=1)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+
+    def test_boolean_store_version_cannot_pass_preflight(self):
+        self.proxy('pm', 'version', 'boolean_store_format')
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertFalse((self.root / 'receipts').exists())
+
+    def test_unsupported_capability_refuses_without_claim(self):
+        self.proxy('pm', 'version', 'missing_capability')
+        p = self.invoke('inspect')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertEqual(self.pmc('show', self.task_id)['data']['claim']['state'], 'absent')

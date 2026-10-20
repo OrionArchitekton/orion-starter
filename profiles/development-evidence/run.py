@@ -115,7 +115,7 @@ def private_dir(path):
 def read_private(path, root, limit=65536):
     need(root in path.parents, 'outside_workspace', 2)
     no_links(path)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as f:
         s = os.fstat(f.fileno())
         need(stat.S_ISREG(s.st_mode) and s.st_nlink == 1 and s.st_uid == os.getuid()
@@ -159,7 +159,7 @@ def durable(path, raw, replace=False):
 
 def selected(path):
     no_links(path)
-    raw = path.read_bytes() if path.stat().st_size <= 65536 else b' ' * 65537
+    raw = read_private(path, path.parent)
     try:
         s = strict(raw)
     except (Stop, ValueError, UnicodeError):
@@ -186,6 +186,7 @@ def selected(path):
         no_links(p)
         if p.exists():
             private_dir(p)
+            need(not (p / '.git').exists(), 'state_in_git', 2)
     for i, p in enumerate(paths):
         need(all(p != q and p not in q.parents and q not in p.parents for q in paths[i+1:]), 'state_overlap', 2)
     for component in ('pm', 'handoff', 'reporter'):
@@ -292,7 +293,7 @@ class Profile:
 
     def call(self, component, command, argv, cap, seconds=10, input_bytes=b''):
         self.failed_operation = component + ':' + command
-        need(time.monotonic() + seconds <= self.deadline, 'attempt_budget')
+        need(time.monotonic() + seconds + 10 <= self.deadline, 'attempt_budget')
         mutating = (component, command) in {('pm', 'claim'), ('pm', 'release'), ('pm', 'evidence attach'),
                     ('pm', 'transition'), ('handoff', 'record'), ('results', 'create'), ('results', 'capture')}
         record = None
@@ -387,7 +388,8 @@ class Profile:
 
     def inspect(self):
         p = self.pm('version')
-        need(p.get('package_version') == '0.1.1' and p.get('api_version') == 1 and p.get('store_format_version') == 1
+        need(p.get('package_version') == '0.1.1' and type(p.get('api_version')) is int and p['api_version'] == 1
+             and type(p.get('store_format_version')) is int and p['store_format_version'] == 1
              and {'tasks.v1', 'coverage.v1', 'claims.v1', 'transitions.v1', 'evidence.v1', 'admission.v1'} <= set(p.get('capabilities', [])), 'pm_version', 3)
         h = self.handoff('--version')
         need(wire(h) == wire({'package_version': '0.1.0', 'interface_version': 1, 'store_version': 1, 'record_version': 1}), 'handoff_version', 3)
@@ -395,7 +397,7 @@ class Profile:
         need(r == {'package_version': '0.1.0', 'reference_version': 1}, 'results_version', 3)
         code, raw, _ = self.call('reporter', 'version', [self.s['reporter']['executable'], '--json', 'version'], 1048576)
         v = strict(raw, 1048576)
-        need(code == 0 and v.get('exit') == 0 and type(v.get('interface_version')) is int and v['interface_version'] == 1
+        need(code == 0 and type(v.get('exit')) is int and v['exit'] == 0 and type(v.get('interface_version')) is int and v['interface_version'] == 1
              and v.get('command') == 'version' and v.get('package_version') == '0.1.0' and v.get('authority') == 'none'
              and {'inventory.v1', 'dirty-path-overlaps.v1', 'coverage.v1'} <= set(v.get('capabilities', [])), 'reporter_version', 3)
         task = self.pm('show', self.s['pm']['task_id'])
@@ -489,7 +491,7 @@ class Profile:
             need(isinstance(r[k], list) and len(r[k]) <= limit, 'report_list')
         inputs = [path(x['root']) for x in r['inputs']]
         need(sorted(inputs) == sorted(p.encode('utf-8') for p in self.s['reporter']['repositories'])
-             and len(set(inputs)) == len(inputs) and c['repositories_selected'] == len(inputs), 'report_selected_inputs')
+             and len(set(inputs)) == len(inputs), 'report_selected_inputs')
         repos = {identity(x['repository_id']): x for x in r['repositories']}
         trees = {identity(x['worktree_id']): x for x in r['worktrees']}
         need(len(repos) == len(r['repositories']) and len(trees) == len(r['worktrees']), 'report_duplicate_identity')
@@ -499,6 +501,7 @@ class Profile:
                 need(x['repository_id'] in repos, 'report_input_repository')
             else:
                 problem(x['problem'])
+        need(c['repositories_selected'] == len(repos) + sum(x['repository_id'] is None for x in r['inputs']), 'report_selected_count')
         for x in repos.values():
             path(x['common_directory'])
             need(x['discovery_state'] in ('observed', 'changed', 'unavailable'), 'report_repository_state')

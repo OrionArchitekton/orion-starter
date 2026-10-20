@@ -11,7 +11,8 @@ from orion_results import Session, Reference, Limits, read, inspect_session
 def main():
     command = sys.argv[1]
     if command == 'version':
-        return {'package_version': importlib.metadata.version('orion-results'), 'reference_version': 1}
+        return {'package_version': importlib.metadata.version('orion-results'),
+                'reference_version': Reference.from_text('0' * 32, '').version}
     raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         raise ValueError('input_limit')

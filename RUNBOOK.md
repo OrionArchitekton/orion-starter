@@ -27,3 +27,5 @@ The builder exports an exact regular-file allowlist, verifies profile hashes, no
 and refuses existing output files, unexpected tracked members and symlinks. Build twice and compare bytes.
 The external release-verification receipt carries the archive hash; it is not embedded in the archive.
 Keep final source/archive/guide/link approval separate from local preparation.
+
+The optional [development evidence runbook](docs/runbooks/starter-development-evidence.md) covers exact-reference recovery and unknown effects. Install its four-wheel lock in a separate environment and run `python -I -B -m unittest discover -s tests -p test_development_evidence.py -v` with that interpreter. Existing continuity tests use their own declared installation. Neither test job proves a native browser workflow or authorizes estate adoption.

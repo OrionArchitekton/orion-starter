@@ -1,6 +1,8 @@
 # Orion starter: local coordination profiles
 
-Prerelease candidate **0.2.0-rc.1**. The default PM/browser profile below keeps its independent roles and pinned inputs. The optional [continuity walkthrough](profiles/continuity/README.md) adds Handoff and a separate full dependency lock.
+Private prerelease candidate **0.3.0-rc.1**. The default PM/browser profile below keeps its independent roles and pinned inputs. The optional [continuity walkthrough](profiles/continuity/README.md) adds Handoff and a separate full dependency lock.
+
+The optional [development evidence walkthrough](profiles/development-evidence/README.md) composes PM, Handoff, Results and Worktree Report. It retains an exact worktree observation, transfers compact context and independently re-observes before completing a synthetic overlap demonstration. It needs no browser, npm, systemd, account or provider key. Package review and publication remain separate gates.
 
 The earlier RC2 archive remains immutable. Its receipt is preserved as historical evidence; final combined native proof belongs in the external release-verification asset for this candidate.
 

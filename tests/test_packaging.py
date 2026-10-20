@@ -13,6 +13,38 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_evidence_profile_is_validated_under_optimized_python(self):
+        with tempfile.TemporaryDirectory(prefix='evidence-package-') as tmp:
+            target = Path(tmp) / 'source'
+            shutil.copytree(ROOT, target, ignore=shutil.ignore_patterns('.git', '.private', '.venv', '__pycache__'))
+            def check():
+                return subprocess.run([sys.executable, '-OO', str(target / 'scripts/check_profile.py')], capture_output=True)
+            self.assertEqual(check().returncode, 0)
+            with (target / 'profiles/development-evidence/requirements.lock').open('a') as f:
+                f.write('\n# altered\n')
+            self.assertNotEqual(check().returncode, 0, 'third profile lock is not validated')
+            shutil.copyfile(ROOT / 'profiles/development-evidence/requirements.lock', target / 'profiles/development-evidence/requirements.lock')
+            for name in ('profiles/development-evidence/run.py', 'profiles/development-evidence/results_io.py',
+                         'profiles/development-evidence/installer.lock', 'profiles/development-evidence/THIRD_PARTY_NOTICES.md'):
+                original = (target / name).read_bytes()
+                (target / name).write_bytes(original + b'\nchanged bytes\n')
+                self.assertNotEqual(check().returncode, 0, name)
+                (target / name).write_bytes(original)
+            profile_path = target / 'profiles/development-evidence/manifest.json'
+            original = profile_path.read_bytes()
+            for field, value in [('components', []), ('version', '0.2.0-rc.1'), ('notices', []),
+                                 ('contracts', {'pm_api': True, 'pm_store': 1, 'handoff_interface': 1, 'handoff_store': 1,
+                                                'handoff_record': 1, 'results_reference': 1, 'worktree_report_interface': 1})]:
+                invalid = json.loads(original)
+                invalid[field] = value
+                profile_path.write_text(json.dumps(invalid))
+                root_manifest = json.loads((ROOT / 'manifest.json').read_bytes())
+                root_manifest['optional_profiles']['development-evidence']['sha256'] = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+                (target / 'manifest.json').write_text(json.dumps(root_manifest))
+                self.assertNotEqual(check().returncode, 0, field)
+            profile_path.write_bytes(original)
+            shutil.copyfile(ROOT / 'manifest.json', target / 'manifest.json')
+
     def test_continuity_lock_is_checked_and_tampering_is_refused(self):
         self.assertTrue((ROOT / 'profiles/continuity/manifest.json').is_file(), 'continuity profile not packaged')
         with tempfile.TemporaryDirectory(prefix='starter-package-test-') as tmp:
@@ -92,6 +124,8 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue(all(not p.startswith('/') and '..' not in Path(p).parts
                                     and '.private' not in Path(p).parts and '.git' not in Path(p).parts
                                     for p in archive.namelist()))
+                self.assertIn('orion-starter-0.3.0-rc.1/profiles/development-evidence/run.py', archive.namelist())
+                self.assertEqual(json.loads(archive.read('orion-starter-0.3.0-rc.1/profiles/development-evidence/manifest.json'))['profile'], 'development-evidence')
             originals = {name: (target / name).read_bytes() for name in
                          ['manifest.json', 'profiles/continuity/manifest.json', 'LICENSE']}
             cases = [('manifest.json', 'schema_version', 99),

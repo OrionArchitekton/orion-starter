@@ -73,6 +73,10 @@ if fault == 'missing_capability':
     value = json.loads(p.stdout)
     value['data']['capabilities'] = []
     p.stdout = json.dumps(value).encode() + b'\n'
+if fault == 'boolean_store_format':
+    value = json.loads(p.stdout)
+    value['data']['store_format_version'] = True
+    p.stdout = json.dumps(value).encode() + b'\n'
 sys.stdout.buffer.write(p.stdout)
 sys.stderr.buffer.write(p.stderr)
 raise SystemExit(p.returncode)
