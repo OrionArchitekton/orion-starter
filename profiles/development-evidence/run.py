@@ -1,5 +1,6 @@
 """Manually selected, local development evidence demonstration. No ambient state."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -404,8 +405,13 @@ class Profile:
         argv = [self.s['reporter']['executable'], '--json', 'scan']
         for root in self.s['reporter']['repositories']:
             argv += ['--repo', root]
-        code, raw, _ = self.call('reporter', 'scan', argv, 1048576, 75)
-        report = self.report(raw, code)
+        code, raw, err = self.call('reporter', 'scan', argv, 1048576, 75)
+        try:
+            report = self.report(raw, code)
+        except (Stop, ValueError, TypeError, KeyError, AttributeError):
+            self.save(self.journal / 'diagnostic-report.raw', raw)
+            self.save(self.journal / 'diagnostic-stderr.raw', err)
+            raise Stop('report_not_established', 3 if code == 2 else 7) from None
         self.save(self.journal / 'report.raw', raw)
         self.outcomes['observation'] = {'interface_version': 1, 'package_version': '0.1.0',
             'scan_id': report['scan_id'], 'stdout_sha256': sha(raw), 'stdout_bytes': len(raw),
@@ -424,10 +430,102 @@ class Profile:
              and r.get('ignore_policy') == 'repository-only', 'report_envelope')
         uid(r['scan_id'])
         need(utc(r['started_at']) <= utc(r['finished_at']) <= datetime.now(timezone.utc), 'report_time')
+        keys(r, 'interface_version package_version command authority scan_id started_at finished_at scope ignore_policy inputs repositories worktrees overlaps coverage problems conclusion exit')
+        def path(value):
+            keys(value, 'path_b64 path_utf8')
+            need(isinstance(value['path_b64'], str), 'report_path')
+            b = base64.b64decode(value['path_b64'], validate=True)
+            need(b and b'\x00' not in b and base64.b64encode(b).decode('ascii') == value['path_b64'], 'report_path')
+            try:
+                label = b.decode('utf-8')
+            except UnicodeError:
+                label = None
+            need(value['path_utf8'] == label, 'report_path_label')
+            return b
+        def identity(value):
+            need(isinstance(value, str) and re.fullmatch('sha256:[0-9a-f]{64}', value), 'report_identity')
+            return value
+        def problem(value):
+            codes = {'invalid_invocation', 'git_missing', 'unsupported_git_version', 'repository_unavailable', 'checkout_unavailable',
+                     'git_failed', 'git_timeout', 'command_output_limit', 'status_parse_error', 'state_changed', 'worktree_limit',
+                     'path_limit', 'overlap_limit', 'index_limit', 'config_limit', 'scan_deadline', 'output_limit', 'internal_error',
+                     'unsupported_repository_feature'}
+            need(isinstance(value, dict) and value.get('code') in codes, 'report_problem')
+            if value['code'] == 'unsupported_repository_feature':
+                need(value.get('feature') in {'bare', 'content_filter', 'included_config', 'submodule', 'sparse', 'split_index',
+                                             'partial_clone', 'unproven_read_effect'}, 'report_feature')
         c = r['coverage']
-        need(c['status'] == 'complete' and not r['problems'] and bool(r['worktrees'])
-             and (code, r['conclusion']) == ((1, 'overlap_observed') if r['overlaps'] else (0, 'no_overlap_observed')),
-             'report_coverage')
+        keys(c, 'status repositories_selected repositories_discovered registered_worktrees worktrees_observed worktrees_unavailable')
+        for k in ('repositories_selected', 'repositories_discovered', 'worktrees_observed', 'worktrees_unavailable'):
+            need(type(c[k]) is int and c[k] >= 0, 'report_count')
+        need(c['registered_worktrees'] is None or type(c['registered_worktrees']) is int and c['registered_worktrees'] >= 0, 'report_count')
+        for k, limit in [('inputs', 8), ('repositories', 8), ('worktrees', 64), ('overlaps', 1000), ('problems', 4096)]:
+            need(isinstance(r[k], list) and len(r[k]) <= limit, 'report_list')
+        inputs = [path(x['root']) for x in r['inputs']]
+        need(sorted(inputs) == sorted(p.encode('utf-8') for p in self.s['reporter']['repositories'])
+             and len(set(inputs)) == len(inputs) and c['repositories_selected'] == len(inputs), 'report_selected_inputs')
+        repos = {identity(x['repository_id']): x for x in r['repositories']}
+        trees = {identity(x['worktree_id']): x for x in r['worktrees']}
+        need(len(repos) == len(r['repositories']) and len(trees) == len(r['worktrees']), 'report_duplicate_identity')
+        for x in r['inputs']:
+            need((x['repository_id'] is None) == (x['problem'] is not None), 'report_input_state')
+            if x['repository_id'] is not None:
+                need(x['repository_id'] in repos, 'report_input_repository')
+            else:
+                problem(x['problem'])
+        for x in repos.values():
+            path(x['common_directory'])
+            need(x['discovery_state'] in ('observed', 'changed', 'unavailable'), 'report_repository_state')
+        observed = 0
+        dirty = {}
+        for key, x in trees.items():
+            path(x['root'])
+            need(x['repository_id'] in repos, 'report_worktree_repository')
+            if x['observation_state'] == 'observed':
+                observed += 1
+                h = x['head']
+                need(h['state'] in ('commit', 'unborn') and (h['oid'] is None) == (h['state'] == 'unborn'), 'report_head')
+                if h['oid'] is not None:
+                    need(isinstance(h['oid'], str) and re.fullmatch('[0-9a-f]{40}|[0-9a-f]{64}', h['oid']), 'report_oid')
+                if h['branch'] is not None:
+                    path(h['branch'])
+                need(isinstance(x['dirty_paths'], list) and len(x['dirty_paths']) <= 4096
+                     and isinstance(x['renames'], list) and len(x['renames']) <= 4096, 'report_dirty_paths')
+                values = [path(v) for v in x['dirty_paths']]
+                need(len(set(values)) == len(values) and all(not p.startswith(b'/') and b'..' not in p.split(b'/') for p in values), 'report_dirty_paths')
+                dirty[key] = set(values)
+                for v in x['renames']:
+                    need(v['kind'] in ('rename', 'copy') and path(v['source']) in dirty[key]
+                         and path(v['destination']) in dirty[key], 'report_rename')
+            else:
+                need(x['observation_state'] in ('changed', 'unavailable', 'unsupported')
+                     and x['head'] is None and x['dirty_paths'] is None and x['renames'] is None, 'report_worktree_state')
+        need(c['worktrees_observed'] == observed and c['worktrees_unavailable'] == len(trees)-observed
+             and (c['registered_worktrees'] is None or c['registered_worktrees'] == len(trees))
+             and c['repositories_discovered'] == sum(x['discovery_state'] == 'observed' for x in repos.values())
+             and c['repositories_selected'] >= len(repos), 'report_counts')
+        seen = set()
+        for overlap in r['overlaps']:
+            pair = overlap['worktree_ids']
+            need(isinstance(pair, list) and len(pair) == 2 and pair == sorted(set(pair)), 'report_overlap_pair')
+            key = identity(overlap['id'])
+            need(key not in seen, 'report_duplicate_overlap')
+            seen.add(key)
+            p = path(overlap['path'])
+            for key in pair:
+                need(key in dirty and p in dirty[key] and trees[key]['repository_id'] == overlap['repository_id'], 'report_overlap_path')
+        for value in r['problems']:
+            problem(value)
+        if c['status'] == 'complete':
+            need(observed > 0 and not r['problems'] and c['registered_worktrees'] == observed
+                 and c['repositories_selected'] == c['repositories_discovered']
+                 and (code, r['conclusion']) == ((1, 'overlap_observed') if r['overlaps'] else (0, 'no_overlap_observed')), 'report_coverage')
+        elif c['status'] == 'partial':
+            need(observed > 0 and r['problems'] and code == 3
+                 and r['conclusion'] == ('overlap_observed' if r['overlaps'] else 'indeterminate'), 'report_coverage')
+        else:
+            need(c['status'] == 'unavailable' and observed == 0 and not r['overlaps'] and r['problems']
+                 and code == 4 and r['conclusion'] == 'indeterminate', 'report_coverage')
         return r
 
     def capture(self, raw):

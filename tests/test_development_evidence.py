@@ -91,6 +91,17 @@ class EvidenceTests(unittest.TestCase):
         return {str(p.relative_to(root or self.root)): (p.stat().st_mode & 0o777, sha(p.read_bytes()))
                 for p in (root or self.root).rglob('*') if p.is_file()}
 
+    def proxy(self, component, at, fault):
+        script = self.root / (component + '-proxy')
+        script.write_text('#!' + sys.executable + '\n' + (ROOT / 'tests/fixtures/evidence_component.py').read_text())
+        script.chmod(0o700)
+        config = {'component': component, 'executable': self.value[component]['executable'],
+                  'at': at, 'fault': fault, 'log': str(self.root / 'calls.jsonl')}
+        self.write(Path(str(script) + '.json'), config)
+        self.value[component]['executable'] = str(script)
+        self.write(self.selection, self.value)
+        return script
+
     def test_select_and_inspect(self):
         self.assertTrue(ENTRY.is_file(), 'development-evidence entry is not implemented')
         before = self.snapshot()
@@ -198,3 +209,77 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(read(slot, receipt['result']['reference']), old)
         state = self.pmc('show', self.task_id)['data']
         self.assertEqual((state['task']['status'], state['claim']['state']), ('todo', 'absent'))
+
+    def test_native_partial_positive_can_yield_but_not_complete(self):
+        self.value['reporter']['repositories'].append(str(self.root / 'missing-repository'))
+        self.write(self.selection, self.value)
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        result = json.loads(p.stdout)
+        self.assertEqual(result['outcomes']['observation']['coverage'], 'partial')
+        self.assertEqual(result['outcomes']['observation']['conclusion'], 'overlap_observed')
+        p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertEqual(self.pmc('show', self.task_id)['data']['task']['status'], 'todo')
+
+    def test_native_negative_partial_indeterminate_and_unavailable(self):
+        # Each fresh fixture is a separate run, never a replay of a mutation.
+        for index, case in enumerate(('negative', 'partial', 'unavailable')):
+            with self.subTest(case=case):
+                if index:
+                    self.setUp()
+                for tree in self.workers:
+                    self.git('restore', 'shared.txt', cwd=tree)
+                if case == 'partial':
+                    self.value['reporter']['repositories'].append(str(self.root / 'missing'))
+                elif case == 'unavailable':
+                    self.value['reporter']['repositories'] = [str(self.root / 'missing')]
+                self.write(self.selection, self.value)
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                obs = json.loads(p.stdout)['outcomes']['observation']
+                self.assertEqual((obs['coverage'], obs['exit']), {'negative': ('complete', 0),
+                    'partial': ('partial', 3), 'unavailable': ('unavailable', 4)}[case])
+                p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+                self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+                self.assertEqual(self.pmc('show', self.task_id)['data']['task']['status'], 'todo')
+
+    def test_odd_byte_paths_keep_exact_identity(self):
+        names = [b'tab\tfile', b'new\nline', b'non-utf8-\xff']
+        for tree in self.workers:
+            for name in names:
+                fd = os.open(os.fsencode(tree) + b'/' + name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.write(fd, b'synthetic fixture\n')
+                os.close(fd)
+        before = self.snapshot(self.repo)
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_bytes())
+        raw = (self.root / 'receipts' / receipt['producer_attempt_id'] / 'report.raw').read_bytes()
+        identities = {base64.b64decode(x['path']['path_b64']): x['path']['path_utf8'] for x in json.loads(raw)['overlaps']}
+        for name in names:
+            self.assertIn(name, identities)
+        self.assertIsNone(identities[names[-1]])
+        self.assertEqual(self.snapshot(self.repo), before)
+
+    def test_invalid_report_processes_never_yield(self):
+        for index, fault in enumerate(('malformed', 'oversize', 'signal', 'exit74', 'exit70', 'wrong_count', 'wrong_path_label', 'stderr_overflow')):
+            with self.subTest(fault=fault):
+                if index:
+                    self.setUp()
+                self.proxy('reporter', 'scan', fault)
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                self.assertFalse((self.root / 'yield.json').exists())
+                self.assertIsNone(json.loads(p.stdout)['outcomes']['capture'])
+                self.assertLessEqual(len(p.stdout), 65536)
+                self.assertEqual(p.stderr, b'')
+
+    def test_internal_error_retains_bounded_private_diagnostics(self):
+        self.proxy('reporter', 'scan', 'exit70')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        attempt = json.loads(p.stdout)['attempt_id']
+        diagnostic = self.root / 'receipts' / attempt / 'diagnostic-report.raw'
+        self.assertTrue(diagnostic.exists(), 'failed report evidence must be retained privately')
+        self.assertLessEqual(diagnostic.stat().st_size, 1048576)
