@@ -125,3 +125,59 @@ class EvidenceTests(unittest.TestCase):
             p = self.invoke('inspect')
             self.assertEqual(p.returncode, 3 if case == 'wrong_store' else 2, p.stdout + p.stderr)
             self.assertEqual(self.snapshot(), before)
+
+    def test_producer_retains_and_yields(self):
+        before = self.snapshot(self.repo)
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        result = json.loads(p.stdout)
+        self.assertEqual(result['state'], 'yielded')
+        receipt = json.loads((self.root / 'yield.json').read_bytes())
+        self.assertEqual(receipt['pm_yield'], {'task_status': 'todo', 'claim_state': 'absent'})
+        current = self.pmc('show', self.task_id)['data']
+        self.assertEqual((current['task']['status'], current['claim']['state']), ('todo', 'absent'))
+        from orion_results import Reference, read, inspect_session
+        ref = Reference.parse(receipt['result']['reference'])
+        slot = self.root / 'results' / receipt['result']['slot']
+        raw = (self.root / 'receipts' / receipt['producer_attempt_id'] / 'report.raw').read_bytes()
+        self.assertEqual(read(slot, ref).encode('utf-8'), raw)
+        self.assertEqual((ref.sha256, ref.utf8_bytes), (sha(raw), len(raw)))
+        self.assertEqual(inspect_session(slot, ref.session_id).status, 'complete')
+        self.assertEqual(receipt['observation']['exit'], 1)
+        self.assertEqual(receipt['observation']['coverage'], 'complete')
+        context = self.hc('show', receipt['context']['record_id'])['data']
+        self.assertTrue(context['current'])
+        self.assertEqual(context['sha256'], receipt['context']['sha256'])
+        self.assertLessEqual(len(context['record']['body'].encode()), 4096)
+        self.assertEqual(self.snapshot(self.repo), before)
+        self.assertNotIn(str(self.root).encode(), p.stdout)
+
+    def test_large_report_is_referenced_not_embedded(self):
+        for tree in self.workers:
+            for i in range(100):
+                (tree / ('synthetic-observation-path-' + str(i).zfill(3) + '.txt')).write_text('owned fixture\n')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_bytes())
+        self.assertGreater(receipt['observation']['stdout_bytes'], 16384)
+        from orion_results import read
+        raw = read(self.root / 'results' / receipt['result']['slot'], receipt['result']['reference']).encode()
+        self.assertEqual((len(raw), sha(raw)), (receipt['observation']['stdout_bytes'], receipt['observation']['stdout_sha256']))
+        context = self.hc('show', receipt['context']['record_id'])['data']['record']
+        self.assertLessEqual(len(context['body'].encode()), 4096)
+        self.assertNotIn(b'synthetic-observation-path-', p.stdout)
+
+    def test_separate_consumer_recovers_reobserves_and_completes(self):
+        first = self.invoke('produce')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        old = json.loads((self.root / 'yield.json').read_bytes())
+        second = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        result = json.loads(second.stdout)
+        self.assertEqual(result['state'], 'completed')
+        self.assertNotEqual(result['outcomes']['task']['generation'], old['pm']['producer_generation'])
+        self.assertNotEqual(result['outcomes']['capture']['reference'], old['result']['reference'])
+        self.assertNotEqual(result['outcomes']['observation']['scan_id'], old['observation']['scan_id'])
+        state = self.pmc('show', self.task_id)['data']
+        self.assertEqual((state['task']['status'], state['claim']['state']), ('done', 'absent'))
+        self.assertEqual(state['task']['evidence'][-1]['reference'], result['outcomes']['capture']['reference'])

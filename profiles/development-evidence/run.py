@@ -128,6 +128,34 @@ def definition(task):
     return sha(wire({k: task.get(k) for k in ('id', 'project', 'title', 'description', 'next_action')}))
 
 
+def durable(path, raw, replace=False):
+    """Private same-directory atomic replacement; directory and bytes are synced."""
+    private_dir(path.parent)
+    if path.exists():
+        need(replace, 'existing_output', 3)
+        read_private(path, path.parent.parent, 1048576)
+    temp = path.with_name('.' + uuid.uuid4().hex + '.tmp')
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+        if replace:
+            os.replace(temp, path)
+        else:
+            os.link(temp, path, follow_symlinks=False)
+            temp.unlink()
+        d = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(d)
+        finally:
+            os.close(d)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
 def selected(path):
     no_links(path)
     raw = path.read_bytes() if path.stat().st_size <= 65536 else b' ' * 65537
@@ -231,13 +259,63 @@ class Profile:
         self.deadline = time.monotonic() + 240
         self.failed_operation = None
         self.attempt = None
+        self.journal = None
+        self.operations = 0
+        self.claim = None
         self.outcomes = {'task': None, 'observation': None, 'capture': None, 'context': None}
         self.key = 'de1-' + sha(wire([PROFILE, 1, self.s['run_id'], self.s['pm']['store_id'], self.s['pm']['task_id']]))
 
     def call(self, component, command, argv, cap, seconds=10, input_bytes=b''):
         self.failed_operation = component + ':' + command
         need(time.monotonic() + seconds <= self.deadline, 'attempt_budget')
-        return process(argv, self.env, cap, min(self.deadline, time.monotonic()+seconds), input_bytes)
+        mutating = (component, command) in {('pm', 'claim'), ('pm', 'release'), ('pm', 'evidence attach'),
+                    ('pm', 'transition'), ('handoff', 'record'), ('results', 'create'), ('results', 'capture')}
+        record = None
+        if mutating:
+            need(self.journal is not None, 'missing_attempt_intent')
+            self.operations += 1
+            record = {'operation_version': 1, 'operation_id': uuid.uuid4().hex, 'component': component,
+                      'command': command, 'state': 'intent', 'at': stamp(), 'run_id': self.s['run_id'],
+                      'attempt_id': self.attempt, 'arguments_sha256': sha(wire(argv)),
+                      'input_sha256': sha(input_bytes), 'outcomes': self.outcomes}
+            record_path = self.journal / f'operation-{self.operations:02d}.json'
+            self.save(record_path, wire(record))
+        try:
+            result = process(argv, self.env, cap, min(self.deadline, time.monotonic()+seconds), input_bytes)
+        except (Stop, OSError, subprocess.SubprocessError):
+            if record:
+                self.save(record_path, wire({**record, 'state': 'unknown'}), True)
+            raise
+        if record:
+            code, raw, err = result
+            self.save(record_path, wire({**record, 'state': 'returned', 'exit': code, 'stdout_sha256': sha(raw),
+                                        'stdout_bytes': len(raw), 'stderr_sha256': sha(err), 'stderr_bytes': len(err)}), True)
+        return result
+
+    def save(self, path, raw, replace=False):
+        need(len(raw) <= (1048576 if path.suffix == '.raw' else 65536), 'receipt_file_limit')
+        need(self.operations <= 32 and time.monotonic() < self.deadline, 'receipt_budget')
+        if self.journal:
+            size = sum(p.stat().st_size for p in self.journal.iterdir() if p.is_file())
+            need(size + len(raw) <= 8*1024*1024, 'receipt_budget')
+        durable(path, raw, replace)
+
+    def checkpoint(self, state='in_progress'):
+        self.save(self.journal / 'attempt.json', wire({
+            'attempt_version': 1, 'profile': PROFILE, 'mode': self.mode, 'run_id': self.s['run_id'],
+            'attempt_id': self.attempt, 'selection_sha256': sha(wire(self.s)), 'state': state,
+            'failed_operation': self.failed_operation, 'outcomes': self.outcomes}), True)
+
+    def begin(self):
+        parent = self.root / 'receipts'
+        if not parent.exists():
+            parent.mkdir(mode=0o700)
+        private_dir(parent)
+        self.attempt = str(uuid.uuid4())
+        self.holder = 'dev-evidence-' + self.attempt.replace('-', '')
+        self.journal = parent / self.attempt
+        self.journal.mkdir(mode=0o700)
+        self.checkpoint()
 
     def pm(self, *args):
         request = uuid.uuid4().hex
@@ -296,10 +374,166 @@ class Profile:
              and v.get('command') == 'version' and v.get('package_version') == '0.1.0' and v.get('authority') == 'none'
              and {'inventory.v1', 'dirty-path-overlaps.v1', 'coverage.v1'} <= set(v.get('capabilities', [])), 'reporter_version', 3)
         task = self.pm('show', self.s['pm']['task_id'])
+        admission = self.pm('claim-admission', 'status')
+        need(isinstance(admission.get('admission'), dict), 'admission_shape')
         rows = self.handoff('list', '--task', self.key, '--limit', '50')
         need(type(rows.get('matching_total')) is int and rows['matching_total'] >= 0, 'handoff_list_shape')
         self.outcomes['task'] = {'store_id': task['store_id'], 'task_id': self.s['pm']['task_id'],
                                  'status': task['task']['status'], 'claim_state': task['claim']['state']}
+
+    def acquire(self):
+        data = self.pm('claim', self.s['pm']['task_id'], '--holder', self.holder, '--ttl-hours', '1')
+        c = data['claim']
+        need(isinstance(c.get('generation'), str) and re.fullmatch('[0-9a-f]{32}', c['generation']), 'claim_shape')
+        self.claim = c
+        self.outcomes['task'] = {'store_id': data['store_id'], 'task_id': self.s['pm']['task_id'],
+                                 'holder': self.holder, 'generation': c['generation'], 'state': 'claimed'}
+        self.checkpoint()
+        self.owned(75)
+
+    def owned(self, seconds=10):
+        data = self.pm('show', self.s['pm']['task_id'])
+        c = data['claim']
+        need(self.claim is not None and c.get('state') == 'live' and c.get('holder') == self.holder
+             and c.get('generation') == self.claim['generation'] and data['task'].get('status') == 'in_progress', 'claim_changed', 3)
+        need((utc(c.get('expires_at'))-datetime.now(timezone.utc)).total_seconds() > seconds+10, 'claim_expiring', 3)
+        return data
+
+    def observe(self):
+        self.owned(75)
+        argv = [self.s['reporter']['executable'], '--json', 'scan']
+        for root in self.s['reporter']['repositories']:
+            argv += ['--repo', root]
+        code, raw, _ = self.call('reporter', 'scan', argv, 1048576, 75)
+        report = self.report(raw, code)
+        self.save(self.journal / 'report.raw', raw)
+        self.outcomes['observation'] = {'interface_version': 1, 'package_version': '0.1.0',
+            'scan_id': report['scan_id'], 'stdout_sha256': sha(raw), 'stdout_bytes': len(raw),
+            'exit': code, 'coverage': report['coverage']['status'], 'conclusion': report['conclusion'],
+            'started_at': report['started_at'], 'finished_at': report['finished_at']}
+        self.checkpoint()
+        return raw
+
+    def report(self, raw, code):
+        need(code in (0, 1, 3, 4), 'report_execution', 3 if code == 2 else 7)
+        need(raw.endswith(b'\n') and not raw.endswith(b'\n\n'), 'report_wire')
+        r = strict(raw, 1048576)
+        need(isinstance(r, dict) and type(r.get('interface_version')) is int and r['interface_version'] == 1
+             and r.get('package_version') == '0.1.0' and r.get('authority') == 'none' and r.get('command') == 'scan'
+             and type(r.get('exit')) is int and r['exit'] == code and r.get('scope') == 'registered-worktrees/dirty-paths'
+             and r.get('ignore_policy') == 'repository-only', 'report_envelope')
+        uid(r['scan_id'])
+        need(utc(r['started_at']) <= utc(r['finished_at']) <= datetime.now(timezone.utc), 'report_time')
+        c = r['coverage']
+        need(c['status'] == 'complete' and not r['problems'] and bool(r['worktrees'])
+             and (code, r['conclusion']) == ((1, 'overlap_observed') if r['overlaps'] else (0, 'no_overlap_observed')),
+             'report_coverage')
+        return r
+
+    def capture(self, raw):
+        self.owned(30)
+        slot = self.attempt
+        root = Path(self.s['results']['root']) / slot
+        need(not root.exists(), 'existing_result_slot', 3)
+        root.mkdir(mode=0o700)
+        self.outcomes['capture'] = {'slot': slot, 'state': 'session_creation_unknown'}
+        self.checkpoint()
+        created = self.results('create', root=str(root), limits=LIMITS)
+        sid = created.get('session_id')
+        need(isinstance(sid, str) and re.fullmatch('[0-9a-f]{32}', sid), 'session_identity')
+        reference = f'r1:{sid}:{sha(raw)}:{len(raw)}'
+        self.outcomes['capture'] = {'slot': slot, 'session_id': sid, 'reference': reference, 'state': 'capture_not_requested'}
+        self.checkpoint()
+        self.owned(30)
+        self.outcomes['capture']['state'] = 'capture_unknown'
+        self.checkpoint()
+        receipt = self.results('capture', root=str(root), session_id=sid, reference=reference,
+                               report_path=str(self.journal / 'report.raw'))
+        need(receipt.get('reference') == reference and receipt.get('sha256') == sha(raw)
+             and receipt.get('utf8_bytes') == len(raw) and receipt.get('closed') is True, 'capture_receipt')
+        self.owned(30)
+        recovered = self.journal / 'capture-readback.raw'
+        readback = self.results('read', root=str(root), reference=reference, output=str(recovered))
+        need(read_private(recovered, self.root, 1048576) == raw and readback.get('reference') == reference,
+             'capture_readback')
+        snapshot = receipt['snapshot']
+        need(isinstance(snapshot, dict) and isinstance(snapshot.get('text'), str)
+             and len(snapshot['text'].encode('utf-8')) <= 4096 and snapshot.get('include_content') is False, 'snapshot_shape')
+        self.outcomes['capture'].update(state='verified', verified_at=stamp(), snapshot=snapshot)
+        self.checkpoint()
+
+    def binding(self):
+        c, p = self.outcomes['capture'], self.s['pm']
+        return {'binding_version': 1, 'profile': PROFILE, 'run_id': self.s['run_id'], 'producer_attempt_id': self.attempt,
+                'selection_sha256': sha(wire(self.s)), 'repositories_sha256': sha(wire(sorted(set(self.s['reporter']['repositories'])))),
+                'pm': {'store_id': p['store_id'], 'task_id': p['task_id'], 'task_definition_sha256': p['task_definition_sha256'],
+                       'producer_generation': self.claim['generation']}, 'result': {'slot': c['slot'], 'reference': c['reference']},
+                'observation': self.outcomes['observation']}
+
+    def context(self, binding):
+        body = wire(binding).decode('ascii')
+        need(len(body.encode()) <= 4096, 'context_body_limit')
+        obs = binding['observation']
+        reference = binding['result']['reference']
+        record = {'record_version': 1, 'task_key': self.key, 'predecessor': None,
+                  'project_key': 'starter-development-evidence-' + self.s['run_id'], 'title': 'Synthetic worktree evidence handover',
+                  'status': 'active', 'actor': self.holder, 'request_id': uuid.uuid4().hex,
+                  'context_as_of': obs['finished_at'], 'last_observed_outcome': obs['coverage'] + ' coverage; ' + obs['conclusion'] + '; exact report retained.',
+                  'unfinished_step': 'Recover exact historical bytes and independently re-observe the selected worktrees.',
+                  'recorded_next_step': 'Review the current request, validate this exact binding, and obtain fresh task ownership.',
+                  'remaining_authority': 'none; consult the current request',
+                  'acceptance_claims': [{'baseline': 'starter-development-evidence-capture-v1', 'reference': reference,
+                                         'accepted_at': self.outcomes['capture']['verified_at']}],
+                  'evidence': [{'source': 'orion-worktree-report/0.1.0', 'artifact': 'sha256:' + obs['stdout_sha256'],
+                                'observed_at': obs['finished_at'], 'scope': 'registered-worktrees/dirty-paths; ' + obs['coverage'],
+                                'reference': reference}], 'body': body}
+        need(len(wire(record)) <= 65536, 'context_record_limit')
+        self.owned()
+        self.outcomes['context'] = {'request_id': record['request_id'], 'binding_sha256': sha(wire(binding)), 'state': 'record_unknown'}
+        self.checkpoint()
+        result = self.handoff('record', '--input', '-', input_bytes=wire(record))
+        self.outcomes['context'].update(record_id=result['record_id'], sha256=result['sha256'])
+        self.checkpoint()
+        shown = self.handoff('show', result['record_id'])
+        need(shown.get('current') is True and shown.get('sha256') == result['sha256']
+             and shown.get('record', {}).get('body') == body, 'context_readback')
+        self.outcomes['context']['state'] = 'verified'
+        self.checkpoint()
+
+    def exact_context(self):
+        c = self.outcomes['context']
+        shown = self.handoff('show', c['record_id'])
+        need(shown.get('current') is True and shown.get('sha256') == c['sha256'], 'context_changed', 3)
+        return shown
+
+    def release(self):
+        data = self.owned()
+        self.pm('release', self.s['pm']['task_id'], '--holder', self.holder, '--generation', self.claim['generation'],
+                '--expect-revision', data['task']['revision'])
+        data = self.pm('show', self.s['pm']['task_id'])
+        need(data['task']['status'] == 'todo' and data['claim']['state'] == 'absent', 'yield_readback')
+        self.outcomes['task']['state'] = 'yielded'
+        self.checkpoint()
+
+    def produce(self):
+        rows = self.handoff('list', '--task', self.key, '--limit', '50')
+        need(rows['matching_total'] == 0, 'existing_context', 3)
+        need(not (self.root / 'yield.json').exists(), 'existing_yield', 3)
+        self.begin()
+        self.acquire()
+        raw = self.observe()
+        self.capture(raw)
+        binding = self.binding()
+        self.context(binding)
+        self.exact_context()
+        self.release()
+        self.exact_context()
+        receipt = {k: v for k, v in binding.items() if k != 'binding_version'}
+        receipt.update(receipt_version=1, context={k: self.outcomes['context'][k] for k in ('record_id', 'sha256')},
+                       pm_yield={'task_status': 'todo', 'claim_state': 'absent'})
+        self.save(self.root / 'yield.json', wire(receipt))
+        self.checkpoint('yielded')
+        return self.reply('yielded')
 
     def reply(self, state, reason=None):
         return {'profile_interface_version': 1, 'profile': PROFILE, 'mode': self.mode, 'run_id': self.s['run_id'],
@@ -319,8 +553,12 @@ def main():
         need((args.mode == 'continue') == bool(args.yield_receipt) and (args.mode == 'reconcile') == bool(args.attempt_receipt), 'invalid_arguments', 2)
         profile = Profile(selected(absolute(args.selection)), args.mode)
         profile.inspect()
-        need(args.mode == 'inspect', 'mode_not_implemented', 3)
-        reply, code = profile.reply('inspected'), 0
+        if args.mode == 'produce':
+            reply = profile.produce()
+        else:
+            need(args.mode == 'inspect', 'mode_not_implemented', 3)
+            reply = profile.reply('inspected')
+        code = 0
     except (Stop, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, Stop) else 7
         reason = exc.reason if isinstance(exc, Stop) else 'unavailable'
