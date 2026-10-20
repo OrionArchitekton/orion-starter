@@ -2,7 +2,7 @@
 
 This optional Orion Starter 0.3.0-rc.1 profile demonstrates one local handover across PM, Handoff, Results and Worktree Report. Its goal is to capture and independently re-observe a deliberate dirty-path overlap. A completed demo says nothing about merge safety or repaired edits.
 
-The profile is manually invoked and needs no browser, npm, systemd, account, provider key or agent hook. Initial native qualification is CPython 3.11 on Linux x86_64 under WSL2 with local ext4, Git 2.43.0 and linked SQLite 3.45.1. Other operating systems, network filesystems, cross-host execution and native Claude/Codex/Grok/Dot integration are unverified. This candidate remains private pending package review.
+The profile is manually invoked and needs no browser, npm, systemd, account, provider key or agent hook. Initial native qualification is CPython 3.11 on Linux x86_64 under WSL2 with local ext4, Git 2.43.0 and linked SQLite 3.45.1. Other operating systems, network filesystems, cross-host execution and native Claude/Codex/Grok/Dot integration are unverified. This is a release candidate for a manually run synthetic demonstration.
 
 ## Install the four selected packages
 

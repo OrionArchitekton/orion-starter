@@ -1,6 +1,8 @@
 # Orion starter: local coordination profiles
 
-Private prerelease candidate **0.3.0-rc.1**. The default PM/browser profile below keeps its independent roles and pinned inputs. The optional [continuity walkthrough](profiles/continuity/README.md) adds Handoff and a separate full dependency lock.
+Release candidate **0.3.0-rc.1**. The default PM/browser profile below keeps its independent roles and pinned inputs. The optional [continuity walkthrough](profiles/continuity/README.md) adds Handoff and a separate full dependency lock.
+
+Download the [versioned ZIP](https://github.com/OrionArchitekton/orion-starter/releases/download/v0.3.0-rc.1/orion-starter-0.3.0-rc.1.zip) and verify it against the release's [SHA256SUMS](https://github.com/OrionArchitekton/orion-starter/releases/download/v0.3.0-rc.1/SHA256SUMS) before extraction. The external [verification receipt](https://github.com/OrionArchitekton/orion-starter/releases/download/v0.3.0-rc.1/release-verification.json) records the selected source, archive and observed validation scope.
 
 The optional [development evidence walkthrough](profiles/development-evidence/README.md) composes PM, Handoff, Results and Worktree Report. It retains an exact worktree observation, transfers compact context and independently re-observes before completing a synthetic overlap demonstration. It needs no browser, npm, systemd, account or provider key. Package review and publication remain separate gates.
 

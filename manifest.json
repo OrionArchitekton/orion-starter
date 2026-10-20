@@ -57,7 +57,7 @@
     },
     "development-evidence": {
       "path": "profiles/development-evidence/manifest.json",
-      "sha256": "87f5adf7a3bce76a1e54216922b0eda148df35cd6415403f0b2132f33c37339a"
+      "sha256": "12a9361ddeeb8a4b4088aaf693854c51b41638c4c48fd9cfe3177b113094326d"
     }
   },
   "bootstrap": {

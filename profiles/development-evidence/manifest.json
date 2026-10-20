@@ -4,7 +4,7 @@
   "version": "0.3.0-rc.1",
   "profile": "development-evidence",
   "profile_interface_version": 1,
-  "status": "private preview candidate",
+  "status": "preview release candidate",
   "components": [
     {
       "name": "orion-pm",
