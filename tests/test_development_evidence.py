@@ -3,10 +3,12 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -28,6 +30,7 @@ class EvidenceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix='evidence-test-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.entry = ENTRY
         self.bin = Path(sys.executable).parent
         self.pm = self.bin / 'orion-pm'
         self.handoff = self.bin / 'orion-handoff'
@@ -84,7 +87,7 @@ class EvidenceTests(unittest.TestCase):
         return json.loads(p.stdout)
 
     def invoke(self, mode, *args):
-        return subprocess.run([sys.executable, '-I', '-B', str(ENTRY), mode, '--selection', str(self.selection),
+        return subprocess.run([sys.executable, '-I', '-B', str(self.entry), mode, '--selection', str(self.selection),
                                *map(str, args)], capture_output=True, timeout=100)
 
     def snapshot(self, root=None):
@@ -101,6 +104,29 @@ class EvidenceTests(unittest.TestCase):
         self.value[component]['executable'] = str(script)
         self.write(self.selection, self.value)
         return script
+
+    def helper_fault(self, command):
+        target = self.root / 'profile-under-test'
+        target.mkdir(mode=0o700)
+        shutil.copyfile(ENTRY, target / 'run.py')
+        helper = ROOT / 'profiles/development-evidence/results_io.py'
+        (target / 'results_io.py').write_text(
+            'import runpy,sys,os,json\n' +
+            'namespace=runpy.run_path(' + repr(str(helper)) + ')\n' +
+            'data=namespace["main"]()\n' +
+            'if sys.argv[1]==' + repr(command) + ': os._exit(74)\n' +
+            'print(json.dumps({"command":sys.argv[1],"state":"ok","data":data}))\n')
+        self.entry = target / 'run.py'
+
+    def storage_fault(self, output_name):
+        target = self.root / 'profile-under-test'
+        target.mkdir(mode=0o700)
+        source = ENTRY.read_text()
+        source = source.replace('    private_dir(path.parent)\n',
+            '    if path.name == ' + repr(output_name) + ':\n        raise OSError("controlled persistence failure")\n    private_dir(path.parent)\n', 1)
+        (target / 'run.py').write_text(source)
+        shutil.copyfile(ROOT / 'profiles/development-evidence/results_io.py', target / 'results_io.py')
+        self.entry = target / 'run.py'
 
     def test_select_and_inspect(self):
         self.assertTrue(ENTRY.is_file(), 'development-evidence entry is not implemented')
@@ -283,3 +309,219 @@ class EvidenceTests(unittest.TestCase):
         diagnostic = self.root / 'receipts' / attempt / 'diagnostic-report.raw'
         self.assertTrue(diagnostic.exists(), 'failed report evidence must be retained privately')
         self.assertLessEqual(diagnostic.stat().st_size, 1048576)
+
+    def test_wrong_result_slot_refuses_before_claim(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_bytes())
+        receipt['result']['slot'] = str(uuid.uuid4())
+        self.write(self.root / 'wrong.json', receipt)
+        before = self.snapshot(self.root / 'pm')
+        p = self.invoke('continue', '--yield-receipt', self.root / 'wrong.json')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertEqual(self.snapshot(self.root / 'pm'), before)
+        self.assertEqual(len(list((self.root / 'results').iterdir())), 1)
+
+    def test_mismatched_receipts_never_claim(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        original = json.loads((self.root / 'yield.json').read_bytes())
+        before = self.snapshot(self.root / 'pm')
+        cases = [('run_id', str(uuid.uuid4())), ('selection_sha256', '0'*64),
+                 ('repositories_sha256', '0'*64), ('task_id', 'different'), ('store_id', '0'*32),
+                 ('task_definition_sha256', '0'*64), ('stdout_bytes', 1), ('sha256', '0'*64)]
+        for key, value in cases:
+            with self.subTest(key=key):
+                receipt = json.loads(canonical(original))
+                target = receipt['pm'] if key in original['pm'] else receipt['observation'] if key == 'stdout_bytes' else receipt['context'] if key == 'sha256' else receipt
+                target[key] = value
+                self.write(self.root / 'wrong.json', receipt)
+                p = self.invoke('continue', '--yield-receipt', self.root / 'wrong.json')
+                self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertEqual(self.snapshot(self.root / 'pm'), before)
+
+    def test_missing_capture_and_replaced_context_never_claim(self):
+        for index, case in enumerate(('capture_missing', 'superseded', 'done', 'stale', 'future', 'no_acceptance')):
+            with self.subTest(case=case):
+                if index:
+                    self.setUp()
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                receipt = json.loads((self.root / 'yield.json').read_bytes())
+                if case == 'capture_missing':
+                    shutil.rmtree(self.root / 'results' / receipt['result']['slot'])
+                else:
+                    row = self.hc('show', receipt['context']['record_id'])['data']['record']
+                    row.pop('created_at')
+                    row['predecessor'] = row.pop('record_id')
+                    row['request_id'] = uuid.uuid4().hex
+                    if case == 'done':
+                        row['status'] = 'done'
+                    elif case in ('stale', 'future'):
+                        row['context_as_of'] = '2000-01-01T00:00:00Z' if case == 'stale' else '2099-01-01T00:00:00Z'
+                    elif case == 'no_acceptance':
+                        row['acceptance_claims'] = []
+                    self.hc('record', '--input', '-', input=canonical(row))
+                before = self.snapshot(self.root / 'pm')
+                p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+                self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertEqual(self.snapshot(self.root / 'pm'), before)
+
+    def test_two_consumers_one_claim(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        argv = [sys.executable, '-I', '-B', str(ENTRY), 'continue', '--selection', str(self.selection),
+                '--yield-receipt', str(self.root / 'yield.json')]
+        workers = [subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+        replies = [p.communicate(timeout=100) for p in workers]
+        self.assertEqual(sorted(p.returncode for p in workers), [0, 3], replies)
+        self.assertEqual(len(list((self.root / 'results').iterdir())), 2)
+        self.assertEqual(self.pmc('show', self.task_id)['data']['task']['status'], 'done')
+
+    def test_context_change_after_attachment_stops_completion(self):
+        proxy = self.proxy('pm', 'evidence', None)
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        config = json.loads(Path(str(proxy) + '.json').read_bytes())
+        config.update(fault='change_context', pm_home=str(self.root / 'pm'), pm_executable=str(self.pm),
+                      task_id=self.task_id, yield_path=str(self.root / 'yield.json'),
+                      handoff_executable=str(self.handoff), handoff_store=str(self.root / 'handoff'))
+        self.write(Path(str(proxy) + '.json'), config)
+        p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        state = self.pmc('show', self.task_id)['data']
+        self.assertNotEqual(state['task']['status'], 'done')
+        self.assertEqual(len(state['task']['evidence']), 1)
+
+    def test_context_change_before_capture_stops_results_mutation(self):
+        proxy = self.proxy('reporter', 'scan', None)
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        config = json.loads(Path(str(proxy) + '.json').read_bytes())
+        config.update(fault='change_context', pm_home=str(self.root / 'pm'), pm_executable=str(self.pm),
+                      task_id=self.task_id, yield_path=str(self.root / 'yield.json'),
+                      handoff_executable=str(self.handoff), handoff_store=str(self.root / 'handoff'))
+        self.write(Path(str(proxy) + '.json'), config)
+        p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertEqual(len(list((self.root / 'results').iterdir())), 1,
+                         'changed context must stop before creating a fresh Results slot')
+
+    def test_lost_session_create_response_stays_unknown(self):
+        self.helper_fault('create')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        reply = json.loads(p.stdout)
+        capture = reply['outcomes']['capture']
+        self.assertEqual(capture['state'], 'session_creation_unknown')
+        self.assertNotIn('session_id', capture)
+        self.assertNotIn('reference', capture)
+        self.assertFalse((self.root / 'yield.json').exists())
+        self.entry = ENTRY
+        attempt = self.root / 'receipts' / reply['attempt_id'] / 'attempt.json'
+        before = self.snapshot()
+        p = self.invoke('reconcile', '--attempt-receipt', attempt)
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['outcomes']['capture']['state'], 'session_creation_unknown')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_unknown_capture_reads_known_reference_without_recapture(self):
+        self.helper_fault('capture')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        reply = json.loads(p.stdout)
+        self.assertEqual(reply['outcomes']['capture']['state'], 'capture_unknown')
+        self.entry = ENTRY
+        attempt = self.root / 'receipts' / reply['attempt_id'] / 'attempt.json'
+        before = self.snapshot()
+        p = self.invoke('reconcile', '--attempt-receipt', attempt)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        result = json.loads(p.stdout)
+        self.assertEqual(result['state'], 'reconciled')
+        self.assertEqual(result['outcomes']['capture']['recovery'], 'exact_bytes_observed')
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / 'yield.json').exists())
+
+    def test_lost_component_responses_are_observed_without_replay(self):
+        cases = [('pm', 'claim', 'produce'), ('handoff', 'record', 'produce'), ('pm', 'release', 'produce'),
+                 ('pm', 'evidence', 'continue'), ('pm', 'transition', 'continue')]
+        for index, (component, command, mode) in enumerate(cases):
+            with self.subTest(component=component, command=command):
+                if index:
+                    self.setUp()
+                proxy = self.proxy(component, command, None)
+                if mode == 'continue':
+                    p = self.invoke('produce')
+                    self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                config = json.loads(Path(str(proxy) + '.json').read_bytes())
+                config['fault'] = 'lose_response'
+                self.write(Path(str(proxy) + '.json'), config)
+                extra = ('--yield-receipt', self.root / 'yield.json') if mode == 'continue' else ()
+                p = self.invoke(mode, *extra)
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                reply = json.loads(p.stdout)
+                self.assertEqual(reply['state'], 'reconciliation_required')
+                attempt = self.root / 'receipts' / reply['attempt_id'] / 'attempt.json'
+                before = {k: self.snapshot(self.root / k) for k in ('pm', 'handoff', 'results', 'receipts')}
+                p = self.invoke('reconcile', '--attempt-receipt', attempt)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertEqual(json.loads(p.stdout)['original_attempt_resumed'], False)
+                self.assertEqual({k: self.snapshot(self.root / k) for k in before}, before)
+                self.assertFalse(any((self.root / 'receipts').glob('*/completed.json')))
+
+    def test_failed_intent_launches_no_claim(self):
+        self.storage_fault('operation-01.json')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        data = self.pmc('show', self.task_id)['data']
+        self.assertEqual((data['task']['status'], data['claim']['state']), ('todo', 'absent'))
+        self.assertFalse((self.root / 'yield.json').exists())
+        self.assertEqual(list((self.root / 'results').iterdir()), [])
+
+    def test_final_yield_persistence_failure_is_not_success(self):
+        self.storage_fault('yield.json')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertFalse((self.root / 'yield.json').exists())
+        data = self.pmc('show', self.task_id)['data']
+        self.assertEqual((data['task']['status'], data['claim']['state']), ('todo', 'absent'))
+
+    def test_successor_after_claim_or_scan_cannot_be_released(self):
+        for index, (component, command) in enumerate((('pm', 'claim'), ('reporter', 'scan'))):
+            with self.subTest(at=command):
+                if index:
+                    self.setUp()
+                proxy = self.proxy(component, command, None)
+                p = self.invoke('produce')
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                config = json.loads(Path(str(proxy) + '.json').read_bytes())
+                config.update(fault='replace_claim', pm_home=str(self.root / 'pm'), pm_executable=str(self.pm), task_id=self.task_id)
+                self.write(Path(str(proxy) + '.json'), config)
+                p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+                self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+                self.assertEqual(self.pmc('show', self.task_id)['data']['claim']['holder'], 'successor')
+                self.assertEqual(len(list((self.root / 'results').iterdir())), 1)
+
+    def test_timed_out_owned_group_is_stopped_after_parent_exits(self):
+        # A narrow supporting test of the profile's own process seam, not a fake component proof.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('profile_process', ENTRY)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        marker = self.root / 'child.pid'
+        code = ('import subprocess,sys; from pathlib import Path; '
+                'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); '
+                'Path(sys.argv[1]).write_text(str(p.pid))')
+        with self.assertRaises(module.Stop):
+            module.process([sys.executable, '-I', '-c', code, str(marker)],
+                           {'PATH': '/usr/bin:/bin'}, 65536, time.monotonic()+0.5)
+        pid = int(marker.read_text())
+        try:
+            # Zombies have stopped executing and need their init owner to reap them.
+            status = Path('/proc') / str(pid) / 'stat'
+            self.assertTrue(not status.exists() or status.read_text().split(') ')[1][0] in ('Z', 'X'), 'owned child still runs')
+        finally:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass

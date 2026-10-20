@@ -37,6 +37,28 @@ if fault == 'exit70':
     raise SystemExit(70)
 data = sys.stdin.buffer.read() if command == 'record' else None
 p = subprocess.run([config['executable'], *args], input=data, capture_output=True)
+if fault in ('replace_claim', 'change_context'):
+    home = config['pm_home']
+    pm = config['pm_executable']
+    def native_pm(*tail):
+        out = subprocess.check_output([pm, '--json', '--home', home, *tail])
+        return json.loads(out)['data']
+    current = native_pm('show', config['task_id'])
+    if fault == 'replace_claim':
+        c = current['claim']
+        native_pm('release', config['task_id'], '--holder', c['holder'], '--generation', c['generation'],
+                  '--expect-revision', current['task']['revision'])
+        native_pm('claim', config['task_id'], '--holder', 'successor', '--ttl-hours', '1')
+    else:
+        receipt = json.loads(Path(config['yield_path']).read_bytes())
+        handoff = [config['handoff_executable'], '--json', '--store', config['handoff_store']]
+        row = json.loads(subprocess.check_output([*handoff, 'show', receipt['context']['record_id']]))['data']['record']
+        old = row.pop('record_id')
+        row.pop('created_at')
+        row['predecessor'] = old
+        row['request_id'] = __import__('uuid').uuid4().hex
+        row['last_observed_outcome'] = 'New context invalidates the prior exact tip.'
+        subprocess.run([*handoff, 'record', '--input', '-'], input=json.dumps(row).encode(), capture_output=True, check=True)
 if fault == 'lose_response':
     raise SystemExit(74)
 if fault == 'wrong_count':

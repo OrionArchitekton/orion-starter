@@ -200,6 +200,38 @@ def selected(path):
     return s
 
 
+def live_owned_group(group):
+    """Observe only members of this invocation's new process group and session."""
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            fields = (entry / 'stat').read_text().rsplit(') ', 1)[1].split()
+            if int(fields[2]) == group and int(fields[3]) == group and fields[0] not in ('Z', 'X'):
+                return True
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return False
+
+
+def stop_owned_group(p):
+    # A parent can exit while a descendant retains its pipes. Parent exit alone
+    # never proves that this invocation's owned group has stopped.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            pass
+        until = time.monotonic() + 5
+        while time.monotonic() < until:
+            p.poll()
+            if not live_owned_group(p.pid):
+                p.wait(timeout=max(0.001, until-time.monotonic()))
+                return
+            time.sleep(0.01)
+    raise Stop('process_stop_unknown')
+
+
 def process(argv, env, cap, deadline, input_bytes=b''):
     p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          env=env, cwd='/', start_new_session=True)
@@ -237,16 +269,7 @@ def process(argv, env, cap, deadline, input_bytes=b''):
         return code, bytes(streams[p.stdout]), bytes(streams[p.stderr])
     finally:
         selector.close()
-        if p.poll() is None:
-            os.killpg(p.pid, signal.SIGTERM)
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(p.pid, signal.SIGKILL)
-                try:
-                    p.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    raise Stop('process_stop_unknown') from None
+        stop_owned_group(p)
         for stream in (p.stdin, p.stdout, p.stderr):
             if not stream.closed:
                 stream.close()
@@ -263,6 +286,7 @@ class Profile:
         self.journal = None
         self.operations = 0
         self.claim = None
+        self.prior_context = None
         self.outcomes = {'task': None, 'observation': None, 'capture': None, 'context': None}
         self.key = 'de1-' + sha(wire([PROFILE, 1, self.s['run_id'], self.s['pm']['store_id'], self.s['pm']['task_id']]))
 
@@ -398,6 +422,8 @@ class Profile:
         need(self.claim is not None and c.get('state') == 'live' and c.get('holder') == self.holder
              and c.get('generation') == self.claim['generation'] and data['task'].get('status') == 'in_progress', 'claim_changed', 3)
         need((utc(c.get('expires_at'))-datetime.now(timezone.utc)).total_seconds() > seconds+10, 'claim_expiring', 3)
+        if self.prior_context is not None:
+            self.pickup(*self.prior_context)
         return data
 
     def observe(self):
@@ -709,6 +735,7 @@ class Profile:
         receipt = strict(read_private(path, self.root))
         binding = self.yield_binding(receipt)
         self.pickup(receipt, binding)
+        self.prior_context = (receipt, binding)
         self.begin()
         self.recover(receipt, 'historical.raw')
         current = self.pm('show', self.s['pm']['task_id'])
@@ -745,6 +772,77 @@ class Profile:
         self.save(self.journal / 'completed.json', wire(self.reply('completed')))
         return self.reply('completed')
 
+    def reconcile(self, path):
+        need(path.name == 'attempt.json' and path.parent.parent == self.root / 'receipts', 'invalid_attempt_path', 2)
+        uid(path.parent.name)
+        saved = strict(read_private(path, self.root))
+        keys(saved, 'attempt_version profile mode run_id attempt_id selection_sha256 state failed_operation outcomes')
+        need(type(saved['attempt_version']) is int and saved['attempt_version'] == 1 and saved['profile'] == PROFILE
+             and saved['mode'] in ('produce', 'continue') and saved['run_id'] == self.s['run_id']
+             and saved['selection_sha256'] == sha(wire(self.s)) and saved['attempt_id'] == path.parent.name, 'attempt_identity', 3)
+        self.attempt = saved['attempt_id']
+        # Deliberately do not adopt a journal: no call can persist an intent or mutate.
+        self.outcomes = saved['outcomes']
+        keys(self.outcomes, 'task observation capture context')
+        current = self.pm('show', self.s['pm']['task_id'])
+        holder = 'dev-evidence-' + self.attempt.replace('-', '')
+        task = self.outcomes['task'] or {}
+        self.outcomes['task'] = {**task, 'observed_status': current['task']['status'], 'observed_claim_state': current['claim']['state'],
+                                 'same_attempt_holder_observed': current['claim'].get('holder') == holder}
+        unresolved = False
+        capture = self.outcomes['capture']
+        if capture:
+            need(capture.get('slot') == self.attempt, 'attempt_result_slot', 3)
+            if not capture.get('session_id'):
+                # The exact slot stays unresolved; never discover its unknown native SID.
+                unresolved = True
+            else:
+                need(isinstance(capture['session_id'], str) and re.fullmatch('[0-9a-f]{32}', capture['session_id']), 'attempt_session', 3)
+                meta = self.results('inspect', root=str(Path(self.s['results']['root']) / self.attempt),
+                                    session_id=capture['session_id'], reference=capture.get('reference'))
+                self.outcomes['capture'] = {**capture, **meta}
+                unresolved = meta.get('status') != 'complete' or bool(capture.get('reference') and meta.get('recovery') != 'exact_bytes_observed')
+        context = self.outcomes['context']
+        if context:
+            if context.get('record_id'):
+                shown = self.handoff('show', context['record_id'])
+                need(shown['sha256'] == context['sha256'], 'context_changed', 3)
+                self.outcomes['context'] = {**context, 'recovery': 'exact_record_observed', 'current': shown['current']}
+            else:
+                rows = self.handoff('list', '--task', self.key, '--limit', '50')
+                matches = []
+                if rows.get('truncated') is False and type(rows.get('matching_total')) is int and rows['matching_total'] <= 50:
+                    for row in rows['records']:
+                        shown = self.handoff('show', row['record_id'])
+                        r = shown['record']
+                        if r.get('request_id') == context.get('request_id') and sha(r['body'].encode('utf-8')) == context.get('binding_sha256'):
+                            matches.append(shown)
+                if len(matches) == 1:
+                    shown = matches[0]
+                    self.outcomes['context'] = {**context, 'record_id': shown['record']['record_id'], 'sha256': shown['sha256'],
+                                                'recovery': 'exact_record_observed', 'current': shown['current']}
+                else:
+                    unresolved = True
+        # Every intent is bounded and exact. Readback observes state; it never replays it.
+        for n in range(1, 33):
+            op = path.parent / f'operation-{n:02d}.json'
+            if not op.exists():
+                break
+            value = strict(read_private(op, self.root))
+            need(value.get('attempt_id') == self.attempt and value.get('run_id') == self.s['run_id'], 'operation_identity', 3)
+            if value.get('state') in ('intent', 'unknown') or value.get('state') == 'returned' and value.get('exit') not in (0, 3):
+                if value.get('component') == 'pm':
+                    command = value.get('command')
+                    established = ((command == 'claim' and current['claim'].get('holder') == holder)
+                                   or (command == 'release' and current['task']['status'] == 'todo' and current['claim']['state'] == 'absent')
+                                   or (command == 'evidence attach' and any(x['id'] == 'development-evidence-' + self.attempt for x in current['task']['evidence']))
+                                   or (command == 'transition' and current['task']['status'] == 'done'
+                                       and any(x['id'] == 'development-evidence-' + self.attempt for x in current['task']['evidence'])))
+                    unresolved = unresolved or not established
+        reply = self.reply('reconciliation_required' if unresolved else 'reconciled', 'unresolved_operation' if unresolved else None)
+        reply['original_attempt_resumed'] = False
+        return reply, 7 if unresolved else 0
+
     def reply(self, state, reason=None):
         return {'profile_interface_version': 1, 'profile': PROFILE, 'mode': self.mode, 'run_id': self.s['run_id'],
                 'attempt_id': self.attempt, 'state': state, 'reason': reason,
@@ -767,6 +865,13 @@ def main():
             reply = profile.produce()
         elif args.mode == 'continue':
             reply = profile.consume(absolute(args.yield_receipt))
+        elif args.mode == 'reconcile':
+            reply, code = profile.reconcile(absolute(args.attempt_receipt))
+            raw = wire(reply) + b'\n'
+            need(len(raw) <= 65536, 'profile_output_limit')
+            sys.stdout.buffer.write(raw)
+            sys.stdout.buffer.flush()
+            return code
         else:
             need(args.mode == 'inspect', 'mode_not_implemented', 3)
             reply = profile.reply('inspected')
@@ -774,6 +879,11 @@ def main():
     except (Stop, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, Stop) else 7
         reason = exc.reason if isinstance(exc, Stop) else 'unavailable'
+        if profile and profile.journal:
+            try:
+                profile.checkpoint('refused' if code == 3 else 'reconciliation_required')
+            except (Stop, OSError):
+                reason, code = 'receipt_persistence_unknown', 7
         state = {2: 'invalid', 3: 'refused', 7: 'reconciliation_required'}[code]
         reply = profile.reply(state, reason) if profile else {'profile_interface_version': 1, 'profile': PROFILE,
                                                              'state': state, 'reason': reason}

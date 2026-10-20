@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from orion_results import Session, Reference, Limits, read
+from orion_results import Session, Reference, Limits, read, inspect_session
 
 
 def main():
@@ -45,6 +45,20 @@ def main():
             f.flush()
             os.fsync(f.fileno())
         return {'reference': str(ref), 'sha256': ref.sha256, 'utf8_bytes': ref.utf8_bytes}
+    if command == 'inspect':
+        sid = data['session_id']
+        inspection = inspect_session(root, sid)
+        answer = {'status': inspection.status, 'findings': list(inspection.findings), 'exhaustive': inspection.exhaustive}
+        if data.get('reference'):
+            ref = Reference.parse(data['reference'])
+            if ref.session_id != sid:
+                raise ValueError('wrong_session')
+            text = read(root, ref)
+            actual = Reference.from_text(sid, text)
+            if actual != ref:
+                raise ValueError('readback_mismatch')
+            answer.update(reference=str(ref), sha256=ref.sha256, utf8_bytes=ref.utf8_bytes, recovery='exact_bytes_observed')
+        return answer
     raise ValueError('unsupported_command')
 
 
