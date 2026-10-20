@@ -320,9 +320,18 @@ class Profile:
             raise
         if record:
             code, raw, err = result
-            self.save(record_path, wire({**record, 'state': 'returned', 'exit': code, 'stdout_sha256': sha(raw),
+            self.save(record_path, wire({**record, 'state': 'unknown' if component == 'pm' else 'returned', 'exit': code, 'stdout_sha256': sha(raw),
                                         'stdout_bytes': len(raw), 'stderr_sha256': sha(err), 'stderr_bytes': len(err)}), True)
         return result
+
+    def pm_observed(self, command):
+        if command not in ('claim', 'release', 'evidence attach', 'transition'):
+            return
+        path = self.journal / f'operation-{self.operations:02d}.json'
+        record = strict(read_private(path, self.root))
+        need(record.get('component') == 'pm' and record.get('command') == command
+             and record.get('state') == 'unknown', 'pm_operation_identity')
+        self.save(path, wire({**record, 'state': 'returned'}), True)
 
     def save(self, path, raw, replace=False):
         need(len(raw) <= (1048576 if path.suffix == '.raw' else 65536), 'receipt_file_limit')
@@ -359,6 +368,7 @@ class Profile:
         need(isinstance(e, dict) and type(e.get('api_version')) is int and e['api_version'] == 1
              and e.get('command') == command and e.get('request_id') == request, 'pm_envelope')
         if code == 3 and e.get('ok') is False and e.get('outcome') == 'rejected':
+            self.pm_observed(command)
             raise Stop('pm_refused', 3)
         need(code == 0 and e.get('ok') is True and e.get('error') is None
              and e.get('outcome') in ('observed', 'committed', 'no_change') and isinstance(e.get('data'), dict), 'pm_unknown')
@@ -430,6 +440,7 @@ class Profile:
                                  'holder': self.holder, 'generation': c['generation'], 'state': 'claimed'}
         self.checkpoint()
         self.owned(75)
+        self.pm_observed('claim')
 
     def owned(self, seconds=10):
         data = self.pm('show', self.s['pm']['task_id'])
@@ -654,6 +665,7 @@ class Profile:
                 '--expect-revision', data['task']['revision'])
         data = self.pm('show', self.s['pm']['task_id'])
         need(data['task']['status'] == 'todo' and data['claim']['state'] == 'absent', 'yield_readback')
+        self.pm_observed('release')
         self.outcomes['task']['state'] = 'yielded' if self.mode == 'produce' else 'released_unfinished'
         self.checkpoint()
 
@@ -780,11 +792,13 @@ class Profile:
                            '--expect-revision', data['task']['revision'], *flags)
         data = self.owned()
         self.pickup(receipt, binding)
-        need(data['task']['revision'] == attached['task']['revision'], 'revision_changed', 3)
+        need(data['task']['revision'] == attached['task']['revision'] and evidence in data['task']['evidence'], 'revision_changed', 3)
+        self.pm_observed('evidence attach')
         self.pm('transition', self.s['pm']['task_id'], 'done', '--expect-revision', data['task']['revision'], *flags)
         final = self.pm('show', self.s['pm']['task_id'])
         need(final['task']['status'] == 'done' and final['claim']['state'] == 'absent'
              and evidence in final['task']['evidence'], 'completion_not_observed')
+        self.pm_observed('transition')
         self.outcomes['task']['state'] = 'completed'
         self.checkpoint('completed')
         self.save(self.journal / 'completed.json', wire(self.reply('completed')))

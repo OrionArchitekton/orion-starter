@@ -54,7 +54,7 @@
   "examples": [
     {
       "path": "profiles/development-evidence/run.py",
-      "sha256": "b081e012e02c559254f1e0b79ee6a8863300a17ac540aad0a1009bb9bad44bbb"
+      "sha256": "0b6f9a8a6a244275437666fc23353ed9c6bbb85cf0f3c0f025816d0a5c984ded"
     },
     {
       "path": "profiles/development-evidence/results_io.py",

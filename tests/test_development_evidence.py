@@ -525,6 +525,34 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse((self.root / 'yield.json').exists())
         self.assertEqual(list((self.root / 'results').iterdir()), [])
 
+    def test_malformed_pm_success_stays_unknown_without_established_effect(self):
+        for index, (command, mode) in enumerate((('claim', 'produce'), ('release', 'produce'),
+                                                  ('evidence', 'continue'), ('transition', 'continue'))):
+            with self.subTest(command=command):
+                if index:
+                    self.setUp()
+                proxy = self.proxy('pm', command, None)
+                if mode == 'continue':
+                    produced = self.invoke('produce')
+                    self.assertEqual(produced.returncode, 0, produced.stdout + produced.stderr)
+                config_path = Path(str(proxy) + '.json')
+                config = json.loads(config_path.read_bytes())
+                config['fault'] = 'malformed'
+                self.write(config_path, config)
+                extra = ('--yield-receipt', self.root / 'yield.json') if mode == 'continue' else ()
+                failed = self.invoke(mode, *extra)
+                self.assertEqual(failed.returncode, 7, failed.stdout + failed.stderr)
+                attempt = self.root / 'receipts' / json.loads(failed.stdout)['attempt_id'] / 'attempt.json'
+                before = {k: self.snapshot(self.root / k) for k in ('pm', 'handoff', 'results', 'receipts')}
+                reconciled = self.invoke('reconcile', '--attempt-receipt', attempt)
+                self.assertEqual(reconciled.returncode, 7, reconciled.stdout + reconciled.stderr)
+                reply = json.loads(reconciled.stdout)
+                self.assertEqual((reply['state'], reply['reason']), ('reconciliation_required', 'unresolved_operation'))
+                self.assertFalse(reply['original_attempt_resumed'])
+                self.assertEqual({k: self.snapshot(self.root / k) for k in before}, before)
+                calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+                self.assertEqual(calls.count(['pm', command]), 1, 'reconcile must never repeat the mutation')
+
     def test_final_yield_persistence_failure_is_not_success(self):
         self.storage_fault('yield.json')
         p = self.invoke('produce')
