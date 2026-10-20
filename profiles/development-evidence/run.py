@@ -345,8 +345,9 @@ class Profile:
         private_dir(parent)
         self.attempt = str(uuid.uuid4())
         self.holder = 'dev-evidence-' + self.attempt.replace('-', '')
-        self.journal = parent / self.attempt
-        self.journal.mkdir(mode=0o700)
+        new_journal = parent / self.attempt
+        new_journal.mkdir(mode=0o700)
+        self.journal = new_journal
         self.checkpoint()
 
     def pm(self, *args):
@@ -389,6 +390,12 @@ class Profile:
     def results(self, command, **data):
         code, raw, _ = self.call('results', command, [sys.executable, '-I', '-B', str(HELPER), command], 65536, 30, wire(data))
         e = strict(raw)
+        if (code == 3 and isinstance(e, dict) and e.get('command') == command and e.get('state') == 'error'
+                and e.get('outcome') == 'not_stored' and isinstance(e.get('code'), str)
+                and re.fullmatch('[a-z_]{1,64}', e['code'])):
+            if command == 'capture' and self.outcomes['capture']:
+                self.outcomes['capture'].update(state='not_stored', native_code=e['code'], native_outcome='not_stored')
+            raise Stop('results_refused', 3)
         need(code == 0 and isinstance(e, dict) and e.get('command') == command and e.get('state') == 'ok', 'results_unknown')
         return e['data']
 

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from orion_results import Session, Reference, Limits, read, inspect_session
+from orion_results import Session, Reference, Limits, ResultError, read, inspect_session
 
 
 def main():
@@ -67,6 +67,9 @@ if __name__ == '__main__':
     try:
         result = {'command': sys.argv[1], 'state': 'ok', 'data': main()}
         status = 0
+    except ResultError as error:
+        result = {'command': sys.argv[1], 'state': 'error', 'code': error.code, 'outcome': error.outcome}
+        status = 3 if error.outcome == 'not_stored' else 7
     except Exception:
         result, status = {'state': 'unknown'}, 7
     print(json.dumps(result, ensure_ascii=True, allow_nan=False))

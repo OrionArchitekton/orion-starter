@@ -128,6 +128,19 @@ class EvidenceTests(unittest.TestCase):
         shutil.copyfile(ROOT / 'profiles/development-evidence/results_io.py', target / 'results_io.py')
         self.entry = target / 'run.py'
 
+    def quota_fault(self):
+        target = self.root / 'profile-under-test'
+        target.mkdir(mode=0o700)
+        shutil.copyfile(ENTRY, target / 'run.py')
+        helper = ROOT / 'profiles/development-evidence/results_io.py'
+        (target / 'results_io.py').write_text(
+            'import runpy,orion_results\noriginal=orion_results.Session.create\n'
+            'def limited(root,*,limits):\n'
+            '    return original(root,limits=orion_results.Limits(max_input_bytes=1048576,max_results=1,max_payload_bytes=1,inline_bytes=4000))\n'
+            'orion_results.Session.create=staticmethod(limited)\n'
+            'runpy.run_path(' + repr(str(helper)) + ',run_name="__main__")\n')
+        self.entry = target / 'run.py'
+
     def test_select_and_inspect(self):
         self.assertTrue(ENTRY.is_file(), 'development-evidence entry is not implemented')
         before = self.snapshot()
@@ -569,3 +582,82 @@ class EvidenceTests(unittest.TestCase):
         code = p.wait(timeout=100)
         self.assertEqual(code, 7, err)
         self.assertEqual(err, b'')
+
+    def test_native_lower_quota_is_known_not_stored(self):
+        self.quota_fault()
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        capture = json.loads(p.stdout)['outcomes']['capture']
+        self.assertEqual(capture['state'], 'not_stored')
+        self.assertEqual(capture['native_code'], 'limit_exceeded')
+        from orion_results import inspect_session
+        inspection = inspect_session(self.root / 'results' / capture['slot'], capture['session_id'])
+        self.assertEqual(inspection.references, ())
+        self.assertFalse((self.root / 'yield.json').exists())
+
+    def test_lost_readback_response_never_yields(self):
+        self.helper_fault('read')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['outcomes']['capture']['state'], 'capture_unknown')
+        self.assertFalse((self.root / 'yield.json').exists())
+
+    def test_existing_attempt_is_never_adopted_on_creation_failure(self):
+        collision = str(uuid.uuid4())
+        parent = self.root / 'receipts'
+        parent.mkdir(mode=0o700)
+        old = parent / collision
+        old.mkdir(mode=0o700)
+        self.write(old / 'attempt.json', {'unrelated': 'preserve this attempt'})
+        target = self.root / 'profile-under-test'
+        target.mkdir(mode=0o700)
+        (target / 'run.py').write_text(ENTRY.read_text().replace('self.attempt = str(uuid.uuid4())', 'self.attempt = ' + repr(collision)))
+        shutil.copyfile(ROOT / 'profiles/development-evidence/results_io.py', target / 'results_io.py')
+        self.entry = target / 'run.py'
+        before = self.snapshot(parent)
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(self.snapshot(parent), before)
+        self.assertEqual(self.pmc('show', self.task_id)['data']['claim']['state'], 'absent')
+
+    def test_corrupt_capture_refuses_before_claim(self):
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        receipt = json.loads((self.root / 'yield.json').read_bytes())
+        slot = self.root / 'results' / receipt['result']['slot']
+        databases = [x for x in slot.rglob('*') if x.is_file() and x.read_bytes()[:16] == b'SQLite format 3\x00']
+        self.assertEqual(len(databases), 1)
+        with databases[0].open('r+b') as f:
+            f.write(b'controlled corrupt fixture bytes')
+        before = self.snapshot(self.root / 'pm')
+        p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(self.snapshot(self.root / 'pm'), before)
+
+    def test_close_failure_never_yields_a_capture_receipt(self):
+        target = self.root / 'profile-under-test'
+        target.mkdir(mode=0o700)
+        shutil.copyfile(ENTRY, target / 'run.py')
+        helper = ROOT / 'profiles/development-evidence/results_io.py'
+        (target / 'results_io.py').write_text(
+            'import runpy,sys\nfrom orion_results import Session\n'
+            'if sys.argv[1]=="capture":\n'
+            '    original=Session.close\n'
+            '    def fail_close(self):\n        original(self)\n        raise OSError("controlled close failure")\n'
+            '    Session.close=fail_close\n'
+            'runpy.run_path(' + repr(str(helper)) + ',run_name="__main__")\n')
+        self.entry = target / 'run.py'
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['outcomes']['capture']['state'], 'capture_unknown')
+        self.assertFalse((self.root / 'yield.json').exists())
+
+    def test_final_completion_receipt_failure_preserves_actual_done_state(self):
+        self.storage_fault('completed.json')
+        p = self.invoke('produce')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        p = self.invoke('continue', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)['state'], 'reconciliation_required')
+        self.assertEqual(self.pmc('show', self.task_id)['data']['task']['status'], 'done')
+        self.assertFalse(any((self.root / 'receipts').glob('*/completed.json')))
