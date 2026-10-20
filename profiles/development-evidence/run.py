@@ -27,6 +27,12 @@ class Stop(Exception):
         self.reason, self.code = reason, code
 
 
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        # Parser diagnostics must not echo caller payloads or paths.
+        raise Stop('invalid_arguments', 2)
+
+
 def need(condition, reason, code=7):
     if not condition:
         raise Stop(reason, code)
@@ -853,32 +859,28 @@ class Profile:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser = Parser(description=__doc__, allow_abbrev=False)
     parser.add_argument('mode', choices=('inspect', 'produce', 'continue', 'reconcile'))
     parser.add_argument('--selection', required=True)
     parser.add_argument('--yield-receipt')
     parser.add_argument('--attempt-receipt')
     profile = None
+    args = None
     try:
         args = parser.parse_args()
         need((args.mode == 'continue') == bool(args.yield_receipt) and (args.mode == 'reconcile') == bool(args.attempt_receipt), 'invalid_arguments', 2)
         profile = Profile(selected(absolute(args.selection)), args.mode)
         profile.inspect()
+        code = 0
         if args.mode == 'produce':
             reply = profile.produce()
         elif args.mode == 'continue':
             reply = profile.consume(absolute(args.yield_receipt))
         elif args.mode == 'reconcile':
             reply, code = profile.reconcile(absolute(args.attempt_receipt))
-            raw = wire(reply) + b'\n'
-            need(len(raw) <= 65536, 'profile_output_limit')
-            sys.stdout.buffer.write(raw)
-            sys.stdout.buffer.flush()
-            return code
         else:
             need(args.mode == 'inspect', 'mode_not_implemented', 3)
             reply = profile.reply('inspected')
-        code = 0
     except (Stop, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, Stop) else 7
         reason = exc.reason if isinstance(exc, Stop) else 'unavailable'
@@ -888,8 +890,10 @@ def main():
             except (Stop, OSError):
                 reason, code = 'receipt_persistence_unknown', 7
         state = {2: 'invalid', 3: 'refused', 7: 'reconciliation_required'}[code]
-        reply = profile.reply(state, reason) if profile else {'profile_interface_version': 1, 'profile': PROFILE,
-                                                             'state': state, 'reason': reason}
+        reply = profile.reply(state, reason) if profile else {
+            'profile_interface_version': 1, 'profile': PROFILE, 'mode': getattr(args, 'mode', None), 'run_id': None,
+            'attempt_id': None, 'state': state, 'reason': reason, 'failed_operation': 'selection' if args else 'arguments',
+            'outcomes': {'task': None, 'observation': None, 'capture': None, 'context': None}}
     raw = wire(reply) + b'\n'
     if len(raw) > 65536:
         raw, code = b'{"state":"reconciliation_required","reason":"profile_output_limit"}\n', 7
@@ -897,6 +901,18 @@ def main():
         sys.stdout.buffer.write(raw)
         sys.stdout.buffer.flush()
     except (BrokenPipeError, OSError):
+        if profile and profile.journal:
+            try:
+                profile.checkpoint('output_delivery_unknown')
+            except (Stop, OSError):
+                pass
+        # Do not let Python's interpreter-shutdown flush turn exit 7 into 120
+        # or echo an unraisable traceback after the caller closes its pipe.
+        descriptor = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(descriptor, sys.stdout.fileno())
+        finally:
+            os.close(descriptor)
         return 7
     return code
 

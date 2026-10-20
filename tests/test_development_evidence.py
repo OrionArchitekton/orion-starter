@@ -551,3 +551,21 @@ class EvidenceTests(unittest.TestCase):
         p = self.invoke('inspect')
         self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
         self.assertEqual(self.pmc('show', self.task_id)['data']['claim']['state'], 'absent')
+
+    def test_invalid_arguments_are_payload_free_json(self):
+        p = subprocess.run([sys.executable, '-I', '-B', str(ENTRY), 'inspect'], capture_output=True, timeout=5)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertEqual(p.stderr, b'')
+        result = json.loads(p.stdout)
+        self.assertEqual(result['state'], 'invalid')
+        self.assertIn('outcomes', result)
+
+    def test_closed_output_pipe_does_not_claim_delivery(self):
+        p = subprocess.Popen([sys.executable, '-I', '-B', str(ENTRY), 'produce', '--selection', str(self.selection)],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.stdout.close()
+        err = p.stderr.read()
+        p.stderr.close()
+        code = p.wait(timeout=100)
+        self.assertEqual(code, 7, err)
+        self.assertEqual(err, b'')

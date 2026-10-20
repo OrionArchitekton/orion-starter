@@ -7,7 +7,7 @@
   "source_tests": {
     "passed": 59,
     "scope": "Installed public PM/Handoff/Results/Worktree Report process tests, labeled process-fault adapters, legacy source/driver fixtures and packaging checks.",
-    "additional_checks": "Strict Boolean store-version preflight and missing-capability controls added after the 59-test source pass; final extracted run will report its actual count separately."
+    "additional_checks": "After the 59-test source pass, targeted tests verified strict Boolean store versions, unsupported capabilities, payload-free argument errors and closed-output-pipe exit 7. Final extracted test count is recorded in the external verification asset."
   },
   "baseline_tests": {
     "passed": 32,
