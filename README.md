@@ -1,5 +1,7 @@
 # Orion starter: local coordination profiles
 
+Part of [Cosmocrat OS](https://www.cosmocrat.ai/tools#orion-starter). Preview.
+
 Release candidate **0.3.0-rc.1**. The default PM/browser profile below keeps its independent roles and pinned inputs. The optional [continuity walkthrough](profiles/continuity/README.md) adds Handoff and a separate full dependency lock.
 
 Download the [versioned ZIP](https://github.com/OrionArchitekton/orion-starter/releases/download/v0.3.0-rc.1/orion-starter-0.3.0-rc.1.zip) and verify it against the release's [SHA256SUMS](https://github.com/OrionArchitekton/orion-starter/releases/download/v0.3.0-rc.1/SHA256SUMS) before extraction. The external [verification receipt](https://github.com/OrionArchitekton/orion-starter/releases/download/v0.3.0-rc.1/release-verification.json) records the selected source, archive and observed validation scope.
