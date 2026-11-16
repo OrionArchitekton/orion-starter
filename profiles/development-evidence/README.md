@@ -268,6 +268,36 @@ in the right sidebar. Remove the folder from Development folders, or run
 ```
 
 The panel uses the same offline HTML. It receives only the generated file and
-declares no worker or capabilities. Refresh by generating a new snapshot and
-reloading the development folder. See the
+declares no worker or capabilities. Generate a new snapshot and reload the development folder for a manual refresh. See the
 [Orca development folder instructions](https://github.com/stablyai/orca/blob/v1.4.259/docs/reference/plugin-authoring.md#2-load-it-while-you-work).
+
+### Refresh the open development panel automatically
+
+Keep the panel folder separate from the selected run. After saving the
+manifest above in the private `view_dir` created by the snapshot command, set
+its file mode to 0600. Load the folder in stock Orca 1.4.259 and open **Starter
+Evidence**. In a terminal at the Starter root, run:
+
+```bash
+chmod 600 "$view_dir/orca-plugin.json"
+.private/evidence-venv/bin/python -I -B profiles/development-evidence/run.py watch-orca \
+    --selection "$DEMO_ROOT/selection.json" --yield-receipt "$DEMO_ROOT/yield.json" \
+    --panel-dir "$view_dir" --seconds 60
+```
+
+The foreground command checks the selected run every two seconds between
+completed observations and writes only changed snapshots. The existing yield
+receipt option can point to the selected run's future receipt. Orca's
+development-folder watcher reloads the panel after an atomic replacement.
+`--seconds` controls when new polls stop and defaults to 60. An in-flight
+observation uses the profile's bounded read timeouts. Ctrl+C stops the command.
+
+If the panel says **Starter refresh unavailable**, check the selected run.
+Successful observations restore the view automatically. A second watcher
+refuses to share the same output folder. Use a separate folder for another
+run. Unload the development panel after stopping the command. The final
+snapshot remains in the selected folder.
+
+The tested setup uses Orca's stock Linux desktop under WSL2 with local ext4
+for the run and panel folder. Windows-native folder watching remains
+unverified.

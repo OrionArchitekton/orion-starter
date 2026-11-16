@@ -1,6 +1,7 @@
 """Manually selected, local development evidence demonstration. No ambient state."""
 import argparse
 import base64
+import fcntl
 import hashlib
 from html import escape
 import json
@@ -136,13 +137,15 @@ def definition(task):
     return sha(wire({k: task.get(k) for k in ('id', 'project', 'title', 'description', 'next_action')}))
 
 
-def durable(path, raw, replace=False):
-    """Private same-directory atomic replacement; directory and bytes are synced."""
+def durable(path, raw, replace=False, staging=None):
+    """Atomically publish private bytes from the same filesystem."""
     private_dir(path.parent)
     if path.exists():
         need(replace, 'existing_output', 3)
         read_private(path, path.parent.parent, 1048576)
-    temp = path.with_name('.' + uuid.uuid4().hex + '.tmp')
+    if staging is not None:
+        private_dir(staging)
+    temp = (staging or path.parent) / ('.' + uuid.uuid4().hex + '.tmp')
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         with os.fdopen(fd, 'wb') as f:
@@ -1039,33 +1042,113 @@ details dd {{ font-family: ui-monospace, monospace; font-size: .86rem; font-weig
 """.encode('utf-8')
 
 
+GENERATED_VIEW_TIME = re.compile(
+    rb'<small>Generated [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} UTC</small>')
+UNAVAILABLE_VIEW = b'''<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Starter refresh unavailable</title>
+<main><h1>Starter refresh unavailable</h1><p>Check the selected Starter run.</p></main>
+</html>
+'''
+
+
+def panel_output(value, workspace):
+    panel = absolute(value)
+    private_dir(panel)
+    need(panel != workspace and panel not in workspace.parents and workspace not in panel.parents,
+         'panel_overlaps_workspace', 2)
+    manifest = strict(read_private(panel / 'orca-plugin.json', panel))
+    panels = manifest.get('contributes', {}).get('panels', [])
+    need(manifest.get('manifestVersion') == 2 and manifest.get('id') == 'starter-evidence'
+         and manifest.get('execution') == 'sandboxed-ui' and manifest.get('capabilities') == []
+         and 'main' not in manifest and len(panels) == 1
+         and panels[0].get('id') == 'evidence' and panels[0].get('entry') == 'panel.html',
+         'unsupported_panel_manifest', 2)
+    staging = panel / '.orca'
+    no_links(staging)
+    staging.mkdir(mode=0o700, exist_ok=True)
+    stage = staging / 'starter-refresh'
+    no_links(stage)
+    stage.mkdir(mode=0o700, exist_ok=True)
+    private_dir(stage)
+    return panel / 'panel.html', stage
+
+
+def observe_panel(selection, receipt):
+    profile = Profile(selection, 'view')
+    try:
+        task = profile.inspect()
+        document = view_html(task, view_historical(profile, str(receipt) if receipt and receipt.exists() else None))
+        return document if len(document) <= 1048576 else UNAVAILABLE_VIEW
+    except (Stop, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, subprocess.SubprocessError):
+        return UNAVAILABLE_VIEW
+
+
+def watch_orca(selection, args):
+    receipt = absolute(args.yield_receipt) if args.yield_receipt else None
+    destination, stage = panel_output(args.panel_dir, Path(selection['workspace']))
+    seconds = 60 if args.seconds is None else args.seconds
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+    with os.fdopen(os.open(stage / 'watch.lock', flags, 0o600), 'rb+') as lock:
+        lock_stat = os.fstat(lock.fileno())
+        need(stat.S_ISREG(lock_stat.st_mode) and lock_stat.st_uid == os.getuid()
+             and lock_stat.st_nlink == 1 and stat.S_IMODE(lock_stat.st_mode) == 0o600, 'invalid_panel_lock', 2)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Stop('panel_already_refreshing', 3) from None
+        deadline = time.monotonic() + seconds
+        published = 0
+        try:
+            while time.monotonic() < deadline:
+                no_links(destination)
+                before = read_private(destination, destination.parent, 1048576) if destination.exists() else b''
+                document = observe_panel(selection, receipt)
+                if (GENERATED_VIEW_TIME.sub(b'', before, count=1)
+                        != GENERATED_VIEW_TIME.sub(b'', document, count=1)):
+                    durable(destination, document, replace=True, staging=stage)
+                    published += 1
+                time.sleep(max(0, min(2, deadline - time.monotonic())))
+        except KeyboardInterrupt:
+            pass
+    return {'profile_interface_version': 1, 'profile': PROFILE, 'mode': 'watch-orca',
+            'run_id': selection['run_id'], 'state': 'watch_stopped', 'published': published}
+
+
 def main():
     parser = Parser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('mode', choices=('inspect', 'produce', 'continue', 'reconcile', 'view'))
+    parser.add_argument('mode', choices=('inspect', 'produce', 'continue', 'reconcile', 'view', 'watch-orca'))
     parser.add_argument('--selection', required=True)
     parser.add_argument('--yield-receipt')
     parser.add_argument('--attempt-receipt')
+    parser.add_argument('--panel-dir')
+    parser.add_argument('--seconds', type=int)
     profile = None
     args = None
     document = None
     try:
         args = parser.parse_args()
-        need((args.mode == 'view' or (args.mode == 'continue') == bool(args.yield_receipt))
-             and (args.mode == 'reconcile') == bool(args.attempt_receipt), 'invalid_arguments', 2)
-        profile = Profile(selected(absolute(args.selection)), args.mode)
-        task = profile.inspect()
+        watching = args.mode == 'watch-orca'
+        need((args.mode in ('view', 'watch-orca') or (args.mode == 'continue') == bool(args.yield_receipt))
+             and (args.mode == 'reconcile') == bool(args.attempt_receipt)
+             and watching == bool(args.panel_dir)
+             and (args.seconds is None or watching and args.seconds > 0), 'invalid_arguments', 2)
+        selection = selected(absolute(args.selection))
         code = 0
-        if args.mode == 'produce':
-            reply = profile.produce()
-        elif args.mode == 'continue':
-            reply = profile.consume(absolute(args.yield_receipt))
-        elif args.mode == 'view':
-            document = view_html(task, view_historical(profile, args.yield_receipt))
-        elif args.mode == 'reconcile':
-            reply, code = profile.reconcile(absolute(args.attempt_receipt))
+        if watching:
+            reply = watch_orca(selection, args)
         else:
-            need(args.mode == 'inspect', 'mode_not_implemented', 3)
-            reply = profile.reply('inspected')
+            profile = Profile(selection, args.mode)
+            task = profile.inspect()
+            if args.mode == 'produce':
+                reply = profile.produce()
+            elif args.mode == 'continue':
+                reply = profile.consume(absolute(args.yield_receipt))
+            elif args.mode == 'view':
+                document = view_html(task, view_historical(profile, args.yield_receipt))
+            elif args.mode == 'reconcile':
+                reply, code = profile.reconcile(absolute(args.attempt_receipt))
+            else:
+                reply = profile.reply('inspected')
     except (Stop, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, Stop) else 7
         reason = exc.reason if isinstance(exc, Stop) else 'unavailable'

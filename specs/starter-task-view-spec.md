@@ -38,3 +38,23 @@ synthetic workspace. Compare selected-store contents before and after the
 view and verify the rendered task, evidence identity, overlap and unavailable
 states. Load the same generated HTML in a disposable stock Orca workspace and
 confirm that the panel renders it.
+
+## Follow a selected run in an Orca development panel
+
+The optional foreground watcher publishes the snapshot to a private, separate
+Starter Evidence development folder. It reads only the selected run and uses
+the same eligibility and evidence checks as the static view. Orca updates the
+open panel when the generated HTML is replaced. A new yield receipt appears
+when the selected producer writes it. When the snapshot content stays the
+same, the watcher keeps the existing file and its timestamp.
+
+The user chooses when the watcher starts and stops. One watcher owns writes
+to each selected panel. When the selected task cannot be read during a poll,
+the panel shows that its refresh is unavailable. A fresh successful poll
+replaces that message. The watcher stages each update within the panel's
+filesystem so readers see complete files.
+
+Acceptance uses a disposable run with the installed component pins. Observe
+the initial snapshot followed by a producer yield. Compare the run's bytes
+before and after idle polls and confirm the unchanged panel is not rewritten.
+Verify the updated panel in stock Orca's development folder.
