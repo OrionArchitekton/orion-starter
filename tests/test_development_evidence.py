@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -257,6 +258,78 @@ class EvidenceTests(unittest.TestCase):
                 self.assertNotIn(recorded['result']['reference'].encode(), view.stdout)
                 self.assertEqual(cache.read_bytes(), captured_bytes)
                 self.assertEqual(self.snapshot(), before)
+
+    def panel_fixture(self):
+        workspace = tempfile.TemporaryDirectory(prefix='starter-panel-')
+        self.addCleanup(workspace.cleanup)
+        panel = Path(workspace.name)
+        self.write(panel / 'orca-plugin.json', {
+            'manifestVersion': 2, 'id': 'starter-evidence', 'execution': 'sandboxed-ui',
+            'capabilities': [], 'contributes': {'panels': [{'id': 'evidence', 'entry': 'panel.html'}]},
+        })
+        return panel
+
+    def watch_fixture(self, panel, seconds=12):
+        return subprocess.Popen([sys.executable, '-I', '-B', str(self.entry), 'watch-orca',
+                                 '--selection', str(self.selection), '--panel-dir', str(panel),
+                                 '--seconds', str(seconds), '--yield-receipt', str(self.root / 'yield.json')],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def await_panel(self, watcher, destination, fragment):
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline and watcher.poll() is None:
+            data = destination.read_bytes() if destination.exists() else b''
+            if fragment in data:
+                return data
+            time.sleep(0.05)
+        self.fail('Watcher exited or timed out before publishing the expected panel')
+
+    def test_watch_orca_updates_after_yield_without_idle_writes(self):
+        panel = self.panel_fixture()
+        destination = panel / 'panel.html'
+        state = self.snapshot()
+        with self.watch_fixture(panel) as watcher:
+            try:
+                self.await_panel(watcher, destination, b'>todo<')
+                self.assertEqual(self.snapshot(), state)
+                competing = self.invoke('watch-orca', '--panel-dir', panel, '--seconds', '1')
+                self.assertEqual(competing.returncode, 3, competing.stdout + competing.stderr)
+                self.assertEqual(json.loads(competing.stdout)['reason'], 'panel_already_refreshing')
+                produced = self.invoke('produce')
+                self.assertEqual(produced.returncode, 0, produced.stdout)
+                current = self.await_panel(watcher, destination, b'shared.txt')
+                stamp = destination.stat().st_mtime_ns
+                state = self.snapshot()
+                out, err = watcher.communicate(timeout=18)
+                self.assertEqual(watcher.returncode, 0, out + err)
+                self.assertEqual(destination.read_bytes(), current)
+                self.assertEqual(destination.stat().st_mtime_ns, stamp)
+                self.assertEqual(self.snapshot(), state)
+            finally:
+                if watcher.poll() is None:
+                    watcher.terminate()
+                    watcher.wait(timeout=15)
+
+    def test_watch_orca_marks_unavailable_then_recovers(self):
+        panel = self.panel_fixture()
+        destination = panel / 'panel.html'
+        pm = self.root / 'pm'
+        moved = self.root / 'temporarily-unavailable-pm'
+        before = self.snapshot()
+        with self.watch_fixture(panel) as watcher:
+            try:
+                self.await_panel(watcher, destination, b'>todo<')
+                pm.rename(moved)
+                try:
+                    self.await_panel(watcher, destination, b'Starter refresh unavailable')
+                finally:
+                    moved.rename(pm)
+                self.await_panel(watcher, destination, b'>todo<')
+                self.assertEqual(self.snapshot(), before)
+            finally:
+                watcher.send_signal(signal.SIGINT)
+                out, err = watcher.communicate(timeout=15)
+                self.assertEqual(watcher.returncode, 0, out + err)
 
     def test_invalid_selection_and_wrong_store_are_read_only(self):
         original = canonical(self.value)
