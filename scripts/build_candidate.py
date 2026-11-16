@@ -47,6 +47,7 @@ scripts/build_candidate.py
 scripts/check_profile.py
 specs/starter-continuity-spec.md
 specs/starter-development-evidence-spec.md
+specs/starter-task-view-spec.md
 tests/fixtures/component_cli.py
 tests/fixtures/native_cli.py
 tests/fixtures/evidence_component.py

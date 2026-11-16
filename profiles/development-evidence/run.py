@@ -2,6 +2,7 @@
 import argparse
 import base64
 import hashlib
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -430,6 +431,7 @@ class Profile:
         need(type(rows.get('matching_total')) is int and rows['matching_total'] >= 0, 'handoff_list_shape')
         self.outcomes['task'] = {'store_id': task['store_id'], 'task_id': self.s['pm']['task_id'],
                                  'status': task['task']['status'], 'claim_state': task['claim']['state']}
+        return task
 
     def acquire(self):
         data = self.pm('claim', self.s['pm']['task_id'], '--holder', self.holder, '--ttl-hours', '1')
@@ -754,12 +756,38 @@ class Profile:
         destination = self.journal / name
         meta = self.results('read', root=str(root), reference=receipt['result']['reference'], output=str(destination))
         raw = read_private(destination, self.root, 1048576)
+        need(meta['reference'] == receipt['result']['reference'], 'historical_capture_changed', 3)
+        self.recorded_report(receipt, raw)
+
+    def recorded_report(self, receipt, raw):
         obs = receipt['observation']
-        need(meta['reference'] == receipt['result']['reference'] and len(raw) == obs['stdout_bytes']
-             and sha(raw) == obs['stdout_sha256'], 'historical_capture_changed', 3)
-        r = self.report(raw, obs['exit'])
-        need(all(r[k] == obs[k] for k in ('scan_id', 'started_at', 'finished_at', 'conclusion'))
-             and r['coverage']['status'] == obs['coverage'], 'historical_observation_changed', 3)
+        need(len(raw) == obs['stdout_bytes'] and sha(raw) == obs['stdout_sha256'], 'historical_capture_changed', 3)
+        report = self.report(raw, obs['exit'])
+        need(all(report[k] == obs[k] for k in ('scan_id', 'started_at', 'finished_at', 'conclusion'))
+             and report['coverage']['status'] == obs['coverage'], 'historical_observation_changed', 3)
+        return report
+
+    def view_evidence(self, path):
+        receipt = strict(read_private(path, self.root))
+        binding = self.yield_binding(receipt)
+        context = receipt['context']
+        shown = self.handoff('show', context['record_id'])
+        record = shown['record']
+        native_bytes = (json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode('utf-8')
+        need(shown.get('sha256') == context['sha256'] == sha(native_bytes)
+             and record.get('record_id') == context['record_id'] and record.get('task_key') == self.key
+             and record.get('body') == wire(binding).decode('ascii'), 'context_binding', 3)
+        capture = self.root / 'receipts' / receipt['producer_attempt_id'] / 'capture-readback.raw'
+        report = self.recorded_report(receipt, read_private(capture, self.root, 1048576))
+        reference = receipt['result']['reference']
+        root = Path(self.s['results']['root']) / receipt['result']['slot']
+        private_dir(root)
+        meta = self.results('inspect', root=str(root), session_id=reference.split(':')[1], reference=reference)
+        need(meta.get('status') == 'complete' and meta.get('exhaustive') is True
+             and meta.get('recovery') == 'exact_bytes_observed' and meta.get('reference') == reference
+             and meta.get('sha256') == receipt['observation']['stdout_sha256']
+             and meta.get('utf8_bytes') == receipt['observation']['stdout_bytes'], 'native_result_unavailable', 3)
+        return receipt, report
 
     def consume(self, path):
         receipt = strict(read_private(path, self.root))
@@ -881,24 +909,158 @@ class Profile:
                 'failed_operation': self.failed_operation if reason else None, 'versions': VERSIONS, 'outcomes': self.outcomes}
 
 
+def view_fields(fields):
+    return ''.join(f'<div><dt>{label}</dt><dd>{escape(str(value))}</dd></div>' for label, value in fields)
+
+
+def view_identifiers(label, fields):
+    return f'<details><summary>{label}</summary><dl>{view_fields(fields)}</dl></details>'
+
+
+def view_time(value):
+    return utc(value).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def view_section(name, title, content):
+    return f'<section aria-labelledby="{name}"><h2 id="{name}">{title}</h2>{content}</section>'
+
+
+def view_path(path):
+    if path is None:
+        return 'Detached HEAD'
+    value = path['path_utf8']
+    if value is not None and value.isprintable():
+        return value
+    return 'Base64 path: ' + path['path_b64']
+
+
+def view_historical(profile, path):
+    if path is None:
+        return '<p>Select a yield receipt to include the retained observation.</p>'
+    try:
+        receipt, report = profile.view_evidence(absolute(path))
+    except (Stop, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, subprocess.SubprocessError):
+        return '<p>Retained evidence unavailable. Check the selected receipt and its bound files.</p>'
+
+    conclusions = {'overlap_observed': 'Overlap observed', 'no_overlap_observed': 'No overlap observed',
+                   'indeterminate': 'Indeterminate'}
+    fields = [
+        ('Finding', conclusions[report['conclusion']]),
+        ('Coverage', report['coverage']['status']),
+        ('Observed (UTC)', view_time(report['finished_at'])),
+    ]
+    branches = {tree['worktree_id']: view_path(tree['head']['branch'])
+                for tree in report['worktrees'] if tree['head'] is not None}
+    overlaps = report['overlaps']
+    rows = ''.join(
+        '<li><code>' + escape(view_path(overlap['path'])) + '</code><br><small>'
+        + escape(' and '.join(branches[key] for key in overlap['worktree_ids'])) + '</small></li>'
+        for overlap in overlaps[:8]
+    )
+    result = f'<p>Retained scan for the selected handoff.</p><dl>{view_fields(fields)}</dl>'
+    if rows:
+        result += f'<h3>Overlapping edits</h3><ul>{rows}</ul>'
+    if len(overlaps) > 8:
+        result += f'<p>Showing 8 of {len(overlaps)} overlaps.</p>'
+    return result + view_identifiers('Handoff and result IDs', [
+        ('Handoff record', receipt['context']['record_id']),
+        ('Result reference', receipt['result']['reference']),
+    ])
+
+
+def view_attached(evidence):
+    if not evidence:
+        return '<p>No evidence is attached to this task.</p>'
+    entries = []
+    for item in evidence[-8:]:
+        fields = [('Source', item['source']), ('Observed (UTC)', view_time(item['observed_at']))]
+        identifiers = view_identifiers('Artifact and reference', [
+            ('Artifact', item['artifact']), ('Reference', item.get('ref') or 'Unavailable')])
+        entries.append(f'<li><dl>{view_fields(fields)}</dl>{identifiers}</li>')
+    limit = f'<p>Showing the last 8 of {len(evidence)} attachments.</p>' if len(evidence) > 8 else ''
+    return '<ol>' + ''.join(entries) + '</ol>' + limit
+
+
+def view_html(data, historical):
+    task, claim = data['task'], data['claim']
+    claim_label = {'live': 'Live at observation', 'expired': 'Expired at observation',
+                   'absent': 'No claim at observation'}.get(claim['state'], 'Unknown at observation')
+    fields = [('Status', task['status']), ('Claim', claim_label)]
+    if claim['state'] in ('live', 'expired'):
+        fields.extend([('Holder', claim['holder']), ('Expires (UTC)', view_time(claim['expires_at']))])
+        if claim.get('branch'):
+            fields.append(('Claim branch', claim['branch']))
+    details = '<dl>' + view_fields(fields) + '</dl>' + view_identifiers('Task ID and revision', [
+        ('Task ID', task['id']), ('Revision', task['revision'])])
+    attached = view_section('attached', 'Attached PM evidence', view_attached(task['evidence']))
+    retained = view_section('history', 'Historical worktree observation', historical)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Orion Starter | Task and evidence</title>
+<style>
+:root {{ color-scheme: light dark; font: 15px/1.5 Inter, system-ui, sans-serif;
+         --surface: light-dark(#f6f8fa, #161d28); --text: light-dark(#172537, #ecf2f8);
+         --muted: light-dark(#46596a, #b3c2d3); --line: light-dark(#c9d6e1, #3b4a5f); }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; background: light-dark(#fff, #10151d); color: var(--text); }}
+main {{ max-width: 46rem; margin: auto; padding: clamp(14px, 4vw, 36px); overflow-wrap: anywhere; }}
+header {{ border-top: 4px solid #278d85; padding-top: 12px; margin-bottom: 20px; }}
+h1 {{ margin: .25rem 0; font-size: 1.65rem; line-height: 1.2; }}
+h2 {{ margin: 0 0 .6rem; font-size: 1.15rem; }}
+p {{ margin: .5rem 0; }}
+section {{ background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+           margin-bottom: 12px; padding: 14px; }}
+small, dt {{ color: var(--muted); }}
+dl {{ margin: 0; }}
+dl div {{ display: grid; grid-template-columns: minmax(6rem, 31%) 1fr; gap: .55rem; padding: .32rem 0; }}
+dd {{ margin: 0; font-weight: 550; }}
+h3 {{ margin: .8rem 0 .35rem; font-size: 1rem; }}
+ul, ol {{ margin: .35rem 0; padding-left: 1.3rem; }}
+li + li {{ margin-top: .45rem; }}
+details {{ margin-top: .6rem; }}
+summary {{ cursor: pointer; color: var(--muted); }}
+details dd {{ font-family: ui-monospace, monospace; font-size: .86rem; font-weight: 400; }}
+</style>
+</head>
+<body>
+<main>
+<header><small>Orion Starter · Read-only snapshot</small><h1>Task and evidence</h1>
+<p><small>Generated {view_time(stamp())} UTC</small></p></header>
+<section aria-labelledby="task"><h2 id="task">{escape(task['title'])}</h2>{details}</section>
+{retained}
+{attached}
+</main>
+</body>
+</html>
+""".encode('utf-8')
+
+
 def main():
     parser = Parser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('mode', choices=('inspect', 'produce', 'continue', 'reconcile'))
+    parser.add_argument('mode', choices=('inspect', 'produce', 'continue', 'reconcile', 'view'))
     parser.add_argument('--selection', required=True)
     parser.add_argument('--yield-receipt')
     parser.add_argument('--attempt-receipt')
     profile = None
     args = None
+    document = None
     try:
         args = parser.parse_args()
-        need((args.mode == 'continue') == bool(args.yield_receipt) and (args.mode == 'reconcile') == bool(args.attempt_receipt), 'invalid_arguments', 2)
+        need((args.mode == 'view' or (args.mode == 'continue') == bool(args.yield_receipt))
+             and (args.mode == 'reconcile') == bool(args.attempt_receipt), 'invalid_arguments', 2)
         profile = Profile(selected(absolute(args.selection)), args.mode)
-        profile.inspect()
+        task = profile.inspect()
         code = 0
         if args.mode == 'produce':
             reply = profile.produce()
         elif args.mode == 'continue':
             reply = profile.consume(absolute(args.yield_receipt))
+        elif args.mode == 'view':
+            document = view_html(task, view_historical(profile, args.yield_receipt))
         elif args.mode == 'reconcile':
             reply, code = profile.reconcile(absolute(args.attempt_receipt))
         else:
@@ -917,8 +1079,9 @@ def main():
             'profile_interface_version': 1, 'profile': PROFILE, 'mode': getattr(args, 'mode', None), 'run_id': None,
             'attempt_id': None, 'state': state, 'reason': reason, 'failed_operation': 'selection' if args else 'arguments',
             'outcomes': {'task': None, 'observation': None, 'capture': None, 'context': None}}
-    raw = wire(reply) + b'\n'
-    if len(raw) > 65536:
+    raw = document if document is not None else wire(reply) + b'\n'
+    output_limit = 1048576 if document is not None else 65536
+    if len(raw) > output_limit:
         raw, code = b'{"state":"reconciliation_required","reason":"profile_output_limit"}\n', 7
     try:
         sys.stdout.buffer.write(raw)
