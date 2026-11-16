@@ -360,7 +360,8 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(self.pmc('show', self.task_id)['data']['task']['status'], 'todo')
 
     def test_odd_byte_paths_keep_exact_identity(self):
-        names = [b'tab\tfile', b'new\nline', b'non-utf8-\xff']
+        long_names = [b'p' * 170 + b'-first', b'p' * 170 + b'-second']
+        names = [b'tab\tfile', b'new\nline', b'non-utf8-\xff', *long_names]
         for tree in self.workers:
             for name in names:
                 fd = os.open(os.fsencode(tree) + b'/' + name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -374,7 +375,14 @@ class EvidenceTests(unittest.TestCase):
         identities = {base64.b64decode(x['path']['path_b64']): x['path']['path_utf8'] for x in json.loads(raw)['overlaps']}
         for name in names:
             self.assertIn(name, identities)
-        self.assertIsNone(identities[names[-1]])
+        self.assertIsNone(identities[names[2]])
+        state = self.snapshot()
+        view = self.invoke('view', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(view.returncode, 0, view.stdout + view.stderr)
+        self.assertIn(base64.b64encode(names[2]), view.stdout)
+        for name in long_names:
+            self.assertIn(name, view.stdout)
+        self.assertEqual(self.snapshot(), state)
         self.assertEqual(self.snapshot(self.repo), before)
 
     def test_invalid_report_processes_never_yield(self):

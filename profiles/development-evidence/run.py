@@ -918,11 +918,12 @@ def view_section(name, title, content):
 
 
 def view_path(path):
-    value = (path or {}).get('path_utf8')
-    if value is None:
-        return 'Path unavailable in UTF-8' if path else 'Detached HEAD'
-    label = value if value.isprintable() else repr(value)
-    return label[:160] + '…' if len(label) > 160 else label
+    if path is None:
+        return 'Detached HEAD'
+    value = path['path_utf8']
+    if value is not None and value.isprintable():
+        return value
+    return 'Base64 path: ' + path['path_b64']
 
 
 def view_historical(profile, path):
@@ -1071,7 +1072,8 @@ def main():
             'attempt_id': None, 'state': state, 'reason': reason, 'failed_operation': 'selection' if args else 'arguments',
             'outcomes': {'task': None, 'observation': None, 'capture': None, 'context': None}}
     raw = document if document is not None else wire(reply) + b'\n'
-    if len(raw) > 65536:
+    output_limit = 1048576 if document is not None else 65536
+    if len(raw) > output_limit:
         raw, code = b'{"state":"reconciliation_required","reason":"profile_output_limit"}\n', 7
     try:
         sys.stdout.buffer.write(raw)

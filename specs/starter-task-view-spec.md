@@ -16,7 +16,8 @@ prevents a successful snapshot.
 
 The user may also select the producer's yield receipt. The snapshot identifies
 the bound handoff and result, shows the retained scan's time, coverage and
-observed overlap paths and branches, and labels it as historical. An unreadable,
+up to eight observed overlap paths and branches, and labels it as historical.
+Displayed paths retain exact printable labels or their Base64 byte representation. An unreadable,
 mismatched or altered receipt or report appears as unavailable. The latest PM
 read displays attached evidence separately with its observed time and reference.
 A subsequent snapshot after continuation shows the recorded outcome of the
