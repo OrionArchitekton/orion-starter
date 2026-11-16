@@ -156,6 +156,77 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(list((self.root / 'results').iterdir()), [])
         self.assertFalse((self.root / 'receipts').exists())
 
+    def test_task_view_shows_selected_claim_without_modifying_state(self):
+        self.pmc('claim', self.task_id, '--holder', '<worker&one>')
+        before = self.snapshot()
+
+        view = self.invoke('view')
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        self.assertIn(b'<!doctype html>', view.stdout)
+        self.assertIn(self.task_id.encode(), view.stdout)
+        self.assertIn(b'in_progress', view.stdout)
+        self.assertIn(b'Live at observation', view.stdout)
+        self.assertIn(b'&lt;worker&amp;one&gt;', view.stdout)
+        self.assertNotIn(b'<worker&one>', view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_evidence_view_connects_the_retained_scan_to_fresh_pm_evidence(self):
+        produced = self.invoke('produce')
+        self.assertEqual(produced.returncode, 0, produced.stdout)
+        receipt = self.root / 'yield.json'
+        historical = json.loads(receipt.read_bytes())
+
+        consumed = self.invoke('continue', '--yield-receipt', receipt)
+        self.assertEqual(consumed.returncode, 0, consumed.stdout)
+        fresh = json.loads(consumed.stdout)['outcomes']['capture']['reference']
+        self.assertNotEqual(fresh, historical['result']['reference'])
+        before = self.snapshot()
+
+        view = self.invoke('view', '--yield-receipt', receipt)
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        for fragment in ('Historical worktree observation', 'shared.txt', 'worker-0', 'worker-1',
+                         'Overlap observed', 'complete', 'Attached PM evidence', 'starter-consumer', '>done<',
+                         historical['context']['record_id'], historical['result']['reference'], fresh):
+            self.assertIn(fragment.encode(), view.stdout)
+        self.assertNotIn(b'<script', view.stdout)
+        self.assertNotIn(str(self.root).encode(), view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_expired_claim_remains_visible_with_its_recorded_branch(self):
+        self.pmc('claim', self.task_id, '--holder', 'old-worker', '--branch', 'feature/evidence')
+        lock = self.root / 'pm' / 'claims' / (self.task_id + '.lock')
+        claim = json.loads(lock.read_bytes())
+        claim.update(acquired_at='2000-01-01T00:00:00Z', expires_at='2000-01-01T01:00:00Z')
+        self.write(lock, claim)
+        before = self.snapshot()
+
+        view = self.invoke('view')
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        self.assertIn(b'Expired at observation', view.stdout)
+        self.assertIn(b'feature/evidence', view.stdout)
+        self.assertNotIn(b'Live at observation', view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_view_preserves_task_when_retained_scan_is_altered(self):
+        produced = self.invoke('produce')
+        self.assertEqual(produced.returncode, 0, produced.stdout)
+        receipt = self.root / 'yield.json'
+        recorded = json.loads(receipt.read_bytes())
+        capture = self.root / 'receipts' / recorded['producer_attempt_id'] / 'capture-readback.raw'
+        capture.write_bytes(capture.read_bytes() + b'altered')
+        before = self.snapshot()
+
+        view = self.invoke('view', '--yield-receipt', receipt)
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        self.assertIn(self.task_id.encode(), view.stdout)
+        self.assertIn(b'Retained evidence unavailable', view.stdout)
+        self.assertNotIn(recorded['result']['reference'].encode(), view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
     def test_invalid_selection_and_wrong_store_are_read_only(self):
         original = canonical(self.value)
         for case in ('extra', 'missing_executable', 'wrong_store', 'boolean_version', 'state_overlap'):
