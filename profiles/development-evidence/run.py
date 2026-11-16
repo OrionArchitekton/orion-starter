@@ -779,6 +779,14 @@ class Profile:
              and record.get('body') == wire(binding).decode('ascii'), 'context_binding', 3)
         capture = self.root / 'receipts' / receipt['producer_attempt_id'] / 'capture-readback.raw'
         report = self.recorded_report(receipt, read_private(capture, self.root, 1048576))
+        reference = receipt['result']['reference']
+        root = Path(self.s['results']['root']) / receipt['result']['slot']
+        private_dir(root)
+        meta = self.results('inspect', root=str(root), session_id=reference.split(':')[1], reference=reference)
+        need(meta.get('status') == 'complete' and meta.get('exhaustive') is True
+             and meta.get('recovery') == 'exact_bytes_observed' and meta.get('reference') == reference
+             and meta.get('sha256') == receipt['observation']['stdout_sha256']
+             and meta.get('utf8_bytes') == receipt['observation']['stdout_bytes'], 'native_result_unavailable', 3)
         return receipt, report
 
     def consume(self, path):

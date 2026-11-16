@@ -227,6 +227,37 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotIn(recorded['result']['reference'].encode(), view.stdout)
         self.assertEqual(self.snapshot(), before)
 
+    def test_view_checks_native_results_even_with_an_intact_cached_scan(self):
+        for index, fault in enumerate(('missing', 'corrupt')):
+            with self.subTest(fault=fault):
+                if index:
+                    self.setUp()
+                produced = self.invoke('produce')
+                self.assertEqual(produced.returncode, 0, produced.stdout)
+                receipt = self.root / 'yield.json'
+                recorded = json.loads(receipt.read_bytes())
+                cache = self.root / 'receipts' / recorded['producer_attempt_id'] / 'capture-readback.raw'
+                captured_bytes = cache.read_bytes()
+                slot = self.root / 'results' / recorded['result']['slot']
+                if fault == 'missing':
+                    shutil.rmtree(slot)
+                else:
+                    databases = [p for p in slot.rglob('*') if p.is_file()
+                                 and p.read_bytes()[:16] == b'SQLite format 3\x00']
+                    self.assertEqual(len(databases), 1)
+                    with databases[0].open('r+b') as stream:
+                        stream.write(b'controlled corrupt fixture bytes')
+                before = self.snapshot()
+
+                view = self.invoke('view', '--yield-receipt', receipt)
+
+                self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+                self.assertIn(self.task_id.encode(), view.stdout)
+                self.assertIn(b'Retained evidence unavailable', view.stdout)
+                self.assertNotIn(recorded['result']['reference'].encode(), view.stdout)
+                self.assertEqual(cache.read_bytes(), captured_bytes)
+                self.assertEqual(self.snapshot(), before)
+
     def test_invalid_selection_and_wrong_store_are_read_only(self):
         original = canonical(self.value)
         for case in ('extra', 'missing_executable', 'wrong_store', 'boolean_version', 'state_overlap'):
