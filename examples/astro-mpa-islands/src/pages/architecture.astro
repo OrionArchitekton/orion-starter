@@ -1,0 +1,37 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout
+  title="Architecture | Orion Astro MPA Islands Starter"
+  description="Multi-page route architecture using native CSS View Transitions and 0 KB client JavaScript."
+  activeNav="architecture"
+>
+  <article class="max-w-3xl space-y-6">
+    <p
+      class="text-xs uppercase tracking-[0.14em] text-[var(--color-orion-fg-muted)]"
+      style="font-family: var(--font-orion-mono);"
+    >
+      Static Route 02
+    </p>
+    <h1
+      class="text-4xl font-bold leading-tight text-white"
+      style="font-family: var(--font-orion-display);"
+    >
+      Native MPA View Transitions Without Client Routers
+    </h1>
+    <p class="text-base leading-relaxed text-[var(--color-orion-fg-muted)]">
+      This route emits zero JavaScript bundles. Cross-document navigation uses standard CSS @view-transition rules guarded by prefers-reduced-motion.
+    </p>
+    <div class="rounded-lg border border-[var(--color-orion-border)] bg-[var(--color-orion-surface)] p-5">
+      <h2 class="text-lg font-semibold text-white" style="font-family: var(--font-orion-display);">
+        When to Hydrate an Island
+      </h2>
+      <ul class="mt-3 list-disc pl-5 space-y-2 text-sm text-[var(--color-orion-fg-muted)]">
+        <li>Use static Astro components for articles, monographs, pricing grids, and navigation.</li>
+        <li>Add client:visible or client:load only for stateful sandboxes, charts, or calculators.</li>
+        <li>Keep per-island hydrated JS strictly under budget.</li>
+      </ul>
+    </div>
+  </article>
+</BaseLayout>
