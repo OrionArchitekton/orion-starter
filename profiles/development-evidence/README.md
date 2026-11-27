@@ -214,3 +214,90 @@ PY
 ```
 
 Retained observations can contain private repository paths and filenames. Removing the environment does not delete them, the fixture, PM state, Handoff context, receipts, downloads or backups. Review the exact printed temporary parent before any deliberate disposal. The profile adds no cleanup command, automatic adoption or background service.
+
+## Inspect the task and evidence in a browser or Orca
+
+The snapshot command is available in development source. Use its documented
+component installation before preparing the demo.
+
+After preparing the synthetic run, generate a snapshot to a new private file.
+Include the yield receipt after the producer yields. Repeating the command to
+a new file after continuation shows the new PM status and attached evidence.
+
+```bash
+set -euo pipefail
+: "${DEMO_ROOT:?Use the exact synthetic workspace}"
+umask 077
+view_dir="$(mktemp -d /tmp/starter-task-view.XXXXXXXX)"
+.private/evidence-venv/bin/python -I -B profiles/development-evidence/run.py view \
+    --selection "$DEMO_ROOT/selection.json" --yield-receipt "$DEMO_ROOT/yield.json" \
+    > "$view_dir/panel.html"
+```
+
+Open the HTML in a browser. Before the first yield, omit `--yield-receipt`.
+The generation time helps distinguish one snapshot from another. An expired
+claim stays visible as expired. The historical finding shows the retained scan;
+the attached PM evidence shows what the later worker recorded. Expand the IDs
+to see exact references. An unavailable retained scan remains visible as
+unavailable. Verify the command's exit status before opening an output file.
+Keep snapshots private when they contain worktree branches or relative paths.
+
+For an Orca pilot, copy the generated HTML into a disposable local development
+folder with this `orca-plugin.json`. Use stock Orca **1.4.259** with a disposable
+workspace showing. Load the folder through Settings → Plugins → Development
+folders, or run `orca plugin dev load <folder>`. The confirmation should list
+the sandboxed panel with an empty host capability list. Open **Starter Evidence**
+in the right sidebar. Remove the folder from Development folders, or run
+`orca plugin dev unload <folder>`, when finished.
+
+```json
+{
+  "manifestVersion": 2,
+  "execution": "sandboxed-ui",
+  "id": "starter-evidence",
+  "name": "Starter Evidence",
+  "version": "0.1.0",
+  "description": "A read-only Orion Starter snapshot.",
+  "engines": {"orca": ">=1.4.259"},
+  "pluginApi": 1,
+  "contributes": {
+    "panels": [{"id": "evidence", "title": "Starter Evidence", "icon": "file-text", "entry": "panel.html"}]
+  },
+  "capabilities": []
+}
+```
+
+The panel uses the same offline HTML. It receives only the generated file and
+declares no worker or capabilities. Generate a new snapshot and reload the development folder for a manual refresh. See the
+[Orca development folder instructions](https://github.com/stablyai/orca/blob/v1.4.259/docs/reference/plugin-authoring.md#2-load-it-while-you-work).
+
+### Refresh the open development panel automatically
+
+Keep the panel folder separate from the selected run. After saving the
+manifest above in the private `view_dir` created by the snapshot command, set
+its file mode to 0600. Load the folder in stock Orca 1.4.259 and open **Starter
+Evidence**. In a terminal at the Starter root, run:
+
+```bash
+chmod 600 "$view_dir/orca-plugin.json"
+.private/evidence-venv/bin/python -I -B profiles/development-evidence/run.py watch-orca \
+    --selection "$DEMO_ROOT/selection.json" --yield-receipt "$DEMO_ROOT/yield.json" \
+    --panel-dir "$view_dir" --seconds 60
+```
+
+The foreground command checks the selected run every two seconds between
+completed observations and writes only changed snapshots. The existing yield
+receipt option can point to the selected run's future receipt. Orca's
+development-folder watcher reloads the panel after an atomic replacement.
+`--seconds` controls when new polls stop and defaults to 60. An in-flight
+observation uses the profile's bounded read timeouts. Ctrl+C stops the command.
+
+If the panel says **Starter refresh unavailable**, check the selected run.
+Successful observations restore the view automatically. A second watcher
+refuses to share the same output folder. Use a separate folder for another
+run. Unload the development panel after stopping the command. The final
+snapshot remains in the selected folder.
+
+The tested setup uses Orca's stock Linux desktop under WSL2 with local ext4
+for the run and panel folder. Windows-native folder watching remains
+unverified.

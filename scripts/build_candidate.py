@@ -24,6 +24,18 @@ docs/runbooks/starter-continuity.md
 docs/runbooks/starter-development-evidence.md
 driver/package-lock.json
 driver/package.json
+examples/astro-mpa-islands/DESIGN.md
+examples/astro-mpa-islands/README.md
+examples/astro-mpa-islands/astro.config.mjs
+examples/astro-mpa-islands/package-lock.json
+examples/astro-mpa-islands/package.json
+examples/astro-mpa-islands/src/components/TokenPreviewIsland.tsx
+examples/astro-mpa-islands/src/layouts/BaseLayout.astro
+examples/astro-mpa-islands/src/pages/architecture.astro
+examples/astro-mpa-islands/src/pages/index.astro
+examples/astro-mpa-islands/src/pages/playground.astro
+examples/astro-mpa-islands/src/styles/tokens.css
+examples/astro-mpa-islands/tsconfig.json
 examples/browser_starter.py
 examples/cli_consumer.py
 examples/continuity_starter.py
@@ -47,6 +59,7 @@ scripts/build_candidate.py
 scripts/check_profile.py
 specs/starter-continuity-spec.md
 specs/starter-development-evidence-spec.md
+specs/starter-task-view-spec.md
 tests/fixtures/component_cli.py
 tests/fixtures/native_cli.py
 tests/fixtures/evidence_component.py

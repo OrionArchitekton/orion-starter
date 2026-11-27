@@ -1,0 +1,31 @@
+---
+import TokenPreviewIsland from '../components/TokenPreviewIsland';
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout
+  title="Interactive Island Demo | Orion Astro MPA Islands Starter"
+  description="Single hydrated React island for brand contrast inspection inside an Astro 7.4.13 MPA."
+  activeNav="playground"
+>
+  <section class="space-y-6">
+    <div class="max-w-3xl space-y-3">
+      <p
+        class="text-xs uppercase tracking-[0.14em] text-[var(--color-orion-fg-muted)]"
+        style="font-family: var(--font-orion-mono);"
+      >
+        Interactive Island Route
+      </p>
+      <h1
+        class="text-4xl font-bold leading-tight text-white"
+        style="font-family: var(--font-orion-display);"
+      >
+        Selective React Island Hydration
+      </h1>
+      <p class="text-base leading-relaxed text-[var(--color-orion-fg-muted)]">
+        Only the interactive token preset selector below hydrates client-side JavaScript. All layout chrome and typography remain zero-JS Astro HTML.
+      </p>
+    </div>
+    <TokenPreviewIsland client:load />
+  </section>
+</BaseLayout>

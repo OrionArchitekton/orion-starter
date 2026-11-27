@@ -1,5 +1,8 @@
 .private/
 .venv/
 driver/node_modules/
+examples/astro-mpa-islands/node_modules/
+examples/astro-mpa-islands/dist/
+examples/astro-mpa-islands/.astro/
 __pycache__/
 *.pyc
