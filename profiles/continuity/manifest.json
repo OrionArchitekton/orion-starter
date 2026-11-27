@@ -46,9 +46,9 @@
   ],
   "bootstrap": {
     "path": "bootstrap-requirements.txt",
-    "sha256": "4aed17ced2b8225bf1957cbc2fc7b056bf14ef0906aa5a09ad5c75ee5f6467ca",
+    "sha256": "02ddba60b48514d4665ed1ca3735a6d234edbc99c5a818f136367e560e5e4d6d",
     "pip": "26.2",
-    "setuptools": "84.0.0"
+    "setuptools": "84.2.1"
   },
   "python_lock_path": "profiles/continuity/requirements.lock",
   "handoff_contract": {
