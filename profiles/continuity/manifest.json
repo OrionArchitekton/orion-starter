@@ -46,8 +46,8 @@
   ],
   "bootstrap": {
     "path": "bootstrap-requirements.txt",
-    "sha256": "4aed17ced2b8225bf1957cbc2fc7b056bf14ef0906aa5a09ad5c75ee5f6467ca",
-    "pip": "26.2",
+    "sha256": "f26becafdbfd5203c9af533dcfdb07fc864f0c7ab547690fbd2c0fe6b56d60eb",
+    "pip": "26.3",
     "setuptools": "84.0.0"
   },
   "python_lock_path": "profiles/continuity/requirements.lock",
