@@ -53,7 +53,7 @@
     "remote_hands": "Not included; active independent development",
     "continuity": {
       "path": "profiles/continuity/manifest.json",
-      "sha256": "73e6fcb799c6dbf7a1e17b738da769decb77c243682cb4ed4fc46b5280d513cc"
+      "sha256": "4e17db3c819165e2a820c7ad2b8099040c26ee76ab90d7188cec9bfc0ef5c2a2"
     },
     "development-evidence": {
       "path": "profiles/development-evidence/manifest.json",
@@ -62,8 +62,8 @@
   },
   "bootstrap": {
     "path": "bootstrap-requirements.txt",
-    "sha256": "4aed17ced2b8225bf1957cbc2fc7b056bf14ef0906aa5a09ad5c75ee5f6467ca",
+    "sha256": "02ddba60b48514d4665ed1ca3735a6d234edbc99c5a818f136367e560e5e4d6d",
     "pip": "26.2",
-    "setuptools": "84.0.0"
+    "setuptools": "84.2.1"
   }
 }
