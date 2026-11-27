@@ -1,0 +1,83 @@
+---
+import '../styles/tokens.css';
+
+interface Props {
+  title: string;
+  description: string;
+  activeNav?: 'overview' | 'architecture' | 'playground';
+}
+
+const { title, description, activeNav = 'overview' } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23020B29'/%3E%3Ccircle cx='8' cy='8' r='4' fill='%23E68249'/%3E%3C/svg%3E" />
+  </head>
+  <body class="min-h-screen bg-[var(--color-orion-bg)] text-[var(--color-orion-fg)] antialiased">
+    <header class="border-b border-[var(--color-orion-border)]">
+      <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-5 py-4">
+        <a
+          href="/"
+          class="font-mono text-xs uppercase tracking-[0.16em] text-[var(--color-orion-accent)] no-underline"
+        >
+          Orion Astro Starter
+        </a>
+        <nav aria-label="Primary navigation" class="flex flex-wrap items-center gap-2">
+          <a
+            href="/"
+            aria-current={activeNav === 'overview' ? 'page' : undefined}
+            class:list={[
+              'inline-flex min-h-[44px] items-center rounded px-3.5 py-2 text-sm font-medium no-underline transition-colors',
+              activeNav === 'overview'
+                ? 'bg-[var(--color-orion-accent)] text-[var(--color-orion-accent-fg)] font-semibold'
+                : 'text-[var(--color-orion-fg)] hover:bg-[var(--color-orion-surface)]'
+            ]}
+          >
+            Overview
+          </a>
+          <a
+            href="/architecture"
+            aria-current={activeNav === 'architecture' ? 'page' : undefined}
+            class:list={[
+              'inline-flex min-h-[44px] items-center rounded px-3.5 py-2 text-sm font-medium no-underline transition-colors',
+              activeNav === 'architecture'
+                ? 'bg-[var(--color-orion-accent)] text-[var(--color-orion-accent-fg)] font-semibold'
+                : 'text-[var(--color-orion-fg)] hover:bg-[var(--color-orion-surface)]'
+            ]}
+          >
+            Architecture
+          </a>
+          <a
+            href="/playground"
+            aria-current={activeNav === 'playground' ? 'page' : undefined}
+            class:list={[
+              'inline-flex min-h-[44px] items-center rounded px-3.5 py-2 text-sm font-medium no-underline transition-colors',
+              activeNav === 'playground'
+                ? 'bg-[var(--color-orion-accent)] text-[var(--color-orion-accent-fg)] font-semibold'
+                : 'text-[var(--color-orion-fg)] hover:bg-[var(--color-orion-surface)]'
+            ]}
+          >
+            Island Demo
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-5xl px-5 py-10 md:py-14">
+      <slot />
+    </main>
+
+    <footer class="border-t border-[var(--color-orion-border)] py-8">
+      <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-5 text-xs font-mono text-[var(--color-orion-fg-muted)]">
+        <span>Astro 7.4.13 MPA + Islands Starter</span>
+        <span>Zero JS on static routes</span>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,54 @@
+@import "tailwindcss";
+@import "@fontsource-variable/newsreader";
+@import "@fontsource-variable/ibm-plex-sans";
+@import "@fontsource-variable/jetbrains-mono";
+
+@theme {
+  --color-orion-bg: oklch(16.37% 0.0639 263.50);
+  --color-orion-surface: oklch(19.65% 0.0882 264.67);
+  --color-orion-surface-elevated: oklch(24.78% 0.1045 264.91);
+  --color-orion-border: oklch(55.44% 0.0407 257.42);
+  --color-orion-fg: oklch(98.42% 0.0034 247.86);
+  --color-orion-fg-muted: oklch(71.07% 0.0351 256.79);
+  --color-orion-accent: oklch(70.56% 0.1424 48.63);
+  --color-orion-accent-hover: oklch(75.59% 0.1322 50.25);
+  --color-orion-accent-fg: oklch(16.37% 0.0639 263.50);
+  --color-orion-focus-ring: oklch(84.42% 0.0972 56.18);
+  --font-orion-display: 'Newsreader Variable', 'Newsreader', Georgia, serif;
+  --font-orion-sans: 'IBM Plex Sans Variable', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-orion-mono: 'JetBrains Mono Variable', 'JetBrains Mono', monospace;
+}
+
+@view-transition {
+  navigation: auto;
+}
+
+:root {
+  color-scheme: dark;
+  background-color: var(--color-orion-bg);
+  color: var(--color-orion-fg);
+  font-family: var(--font-orion-sans);
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--color-orion-focus-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

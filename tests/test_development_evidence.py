@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -156,6 +157,180 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(list((self.root / 'results').iterdir()), [])
         self.assertFalse((self.root / 'receipts').exists())
 
+    def test_task_view_shows_selected_claim_without_modifying_state(self):
+        self.pmc('claim', self.task_id, '--holder', '<worker&one>')
+        before = self.snapshot()
+
+        view = self.invoke('view')
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        self.assertIn(b'<!doctype html>', view.stdout)
+        self.assertIn(self.task_id.encode(), view.stdout)
+        self.assertIn(b'in_progress', view.stdout)
+        self.assertIn(b'Live at observation', view.stdout)
+        self.assertIn(b'&lt;worker&amp;one&gt;', view.stdout)
+        self.assertNotIn(b'<worker&one>', view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_evidence_view_connects_the_retained_scan_to_fresh_pm_evidence(self):
+        produced = self.invoke('produce')
+        self.assertEqual(produced.returncode, 0, produced.stdout)
+        receipt = self.root / 'yield.json'
+        historical = json.loads(receipt.read_bytes())
+
+        consumed = self.invoke('continue', '--yield-receipt', receipt)
+        self.assertEqual(consumed.returncode, 0, consumed.stdout)
+        fresh = json.loads(consumed.stdout)['outcomes']['capture']['reference']
+        self.assertNotEqual(fresh, historical['result']['reference'])
+        before = self.snapshot()
+
+        view = self.invoke('view', '--yield-receipt', receipt)
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        for fragment in ('Historical worktree observation', 'shared.txt', 'worker-0', 'worker-1',
+                         'Overlap observed', 'complete', 'Attached PM evidence', 'starter-consumer', '>done<',
+                         historical['context']['record_id'], historical['result']['reference'], fresh):
+            self.assertIn(fragment.encode(), view.stdout)
+        self.assertNotIn(b'<script', view.stdout)
+        self.assertNotIn(str(self.root).encode(), view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_expired_claim_remains_visible_with_its_recorded_branch(self):
+        self.pmc('claim', self.task_id, '--holder', 'old-worker', '--branch', 'feature/evidence')
+        lock = self.root / 'pm' / 'claims' / (self.task_id + '.lock')
+        claim = json.loads(lock.read_bytes())
+        claim.update(acquired_at='2000-01-01T00:00:00Z', expires_at='2000-01-01T01:00:00Z')
+        self.write(lock, claim)
+        before = self.snapshot()
+
+        view = self.invoke('view')
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        self.assertIn(b'Expired at observation', view.stdout)
+        self.assertIn(b'feature/evidence', view.stdout)
+        self.assertNotIn(b'Live at observation', view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_view_preserves_task_when_retained_scan_is_altered(self):
+        produced = self.invoke('produce')
+        self.assertEqual(produced.returncode, 0, produced.stdout)
+        receipt = self.root / 'yield.json'
+        recorded = json.loads(receipt.read_bytes())
+        capture = self.root / 'receipts' / recorded['producer_attempt_id'] / 'capture-readback.raw'
+        capture.write_bytes(capture.read_bytes() + b'altered')
+        before = self.snapshot()
+
+        view = self.invoke('view', '--yield-receipt', receipt)
+
+        self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+        self.assertIn(self.task_id.encode(), view.stdout)
+        self.assertIn(b'Retained evidence unavailable', view.stdout)
+        self.assertNotIn(recorded['result']['reference'].encode(), view.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_view_checks_native_results_even_with_an_intact_cached_scan(self):
+        for index, fault in enumerate(('missing', 'corrupt')):
+            with self.subTest(fault=fault):
+                if index:
+                    self.setUp()
+                produced = self.invoke('produce')
+                self.assertEqual(produced.returncode, 0, produced.stdout)
+                receipt = self.root / 'yield.json'
+                recorded = json.loads(receipt.read_bytes())
+                cache = self.root / 'receipts' / recorded['producer_attempt_id'] / 'capture-readback.raw'
+                captured_bytes = cache.read_bytes()
+                slot = self.root / 'results' / recorded['result']['slot']
+                if fault == 'missing':
+                    shutil.rmtree(slot)
+                else:
+                    databases = [p for p in slot.rglob('*') if p.is_file()
+                                 and p.read_bytes()[:16] == b'SQLite format 3\x00']
+                    self.assertEqual(len(databases), 1)
+                    with databases[0].open('r+b') as stream:
+                        stream.write(b'controlled corrupt fixture bytes')
+                before = self.snapshot()
+
+                view = self.invoke('view', '--yield-receipt', receipt)
+
+                self.assertEqual(view.returncode, 0, view.stderr + view.stdout)
+                self.assertIn(self.task_id.encode(), view.stdout)
+                self.assertIn(b'Retained evidence unavailable', view.stdout)
+                self.assertNotIn(recorded['result']['reference'].encode(), view.stdout)
+                self.assertEqual(cache.read_bytes(), captured_bytes)
+                self.assertEqual(self.snapshot(), before)
+
+    def panel_fixture(self):
+        workspace = tempfile.TemporaryDirectory(prefix='starter-panel-')
+        self.addCleanup(workspace.cleanup)
+        panel = Path(workspace.name)
+        self.write(panel / 'orca-plugin.json', {
+            'manifestVersion': 2, 'id': 'starter-evidence', 'execution': 'sandboxed-ui',
+            'capabilities': [], 'contributes': {'panels': [{'id': 'evidence', 'entry': 'panel.html'}]},
+        })
+        return panel
+
+    def watch_fixture(self, panel, seconds=12):
+        return subprocess.Popen([sys.executable, '-I', '-B', str(self.entry), 'watch-orca',
+                                 '--selection', str(self.selection), '--panel-dir', str(panel),
+                                 '--seconds', str(seconds), '--yield-receipt', str(self.root / 'yield.json')],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def await_panel(self, watcher, destination, fragment):
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline and watcher.poll() is None:
+            data = destination.read_bytes() if destination.exists() else b''
+            if fragment in data:
+                return data
+            time.sleep(0.05)
+        self.fail('Watcher exited or timed out before publishing the expected panel')
+
+    def test_watch_orca_updates_after_yield_without_idle_writes(self):
+        panel = self.panel_fixture()
+        destination = panel / 'panel.html'
+        state = self.snapshot()
+        with self.watch_fixture(panel) as watcher:
+            try:
+                self.await_panel(watcher, destination, b'>todo<')
+                self.assertEqual(self.snapshot(), state)
+                competing = self.invoke('watch-orca', '--panel-dir', panel, '--seconds', '1')
+                self.assertEqual(competing.returncode, 3, competing.stdout + competing.stderr)
+                self.assertEqual(json.loads(competing.stdout)['reason'], 'panel_already_refreshing')
+                produced = self.invoke('produce')
+                self.assertEqual(produced.returncode, 0, produced.stdout)
+                current = self.await_panel(watcher, destination, b'shared.txt')
+                stamp = destination.stat().st_mtime_ns
+                state = self.snapshot()
+                out, err = watcher.communicate(timeout=18)
+                self.assertEqual(watcher.returncode, 0, out + err)
+                self.assertEqual(destination.read_bytes(), current)
+                self.assertEqual(destination.stat().st_mtime_ns, stamp)
+                self.assertEqual(self.snapshot(), state)
+            finally:
+                if watcher.poll() is None:
+                    watcher.terminate()
+                    watcher.wait(timeout=15)
+
+    def test_watch_orca_marks_unavailable_then_recovers(self):
+        panel = self.panel_fixture()
+        destination = panel / 'panel.html'
+        pm = self.root / 'pm'
+        moved = self.root / 'temporarily-unavailable-pm'
+        before = self.snapshot()
+        with self.watch_fixture(panel) as watcher:
+            try:
+                self.await_panel(watcher, destination, b'>todo<')
+                pm.rename(moved)
+                try:
+                    self.await_panel(watcher, destination, b'Starter refresh unavailable')
+                finally:
+                    moved.rename(pm)
+                self.await_panel(watcher, destination, b'>todo<')
+                self.assertEqual(self.snapshot(), before)
+            finally:
+                watcher.send_signal(signal.SIGINT)
+                out, err = watcher.communicate(timeout=15)
+                self.assertEqual(watcher.returncode, 0, out + err)
+
     def test_invalid_selection_and_wrong_store_are_read_only(self):
         original = canonical(self.value)
         for case in ('extra', 'missing_executable', 'wrong_store', 'boolean_version', 'state_overlap'):
@@ -289,7 +464,8 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(self.pmc('show', self.task_id)['data']['task']['status'], 'todo')
 
     def test_odd_byte_paths_keep_exact_identity(self):
-        names = [b'tab\tfile', b'new\nline', b'non-utf8-\xff']
+        long_names = [b'p' * 170 + b'-first', b'p' * 170 + b'-second']
+        names = [b'tab\tfile', b'new\nline', b'non-utf8-\xff', *long_names]
         for tree in self.workers:
             for name in names:
                 fd = os.open(os.fsencode(tree) + b'/' + name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -303,7 +479,14 @@ class EvidenceTests(unittest.TestCase):
         identities = {base64.b64decode(x['path']['path_b64']): x['path']['path_utf8'] for x in json.loads(raw)['overlaps']}
         for name in names:
             self.assertIn(name, identities)
-        self.assertIsNone(identities[names[-1]])
+        self.assertIsNone(identities[names[2]])
+        state = self.snapshot()
+        view = self.invoke('view', '--yield-receipt', self.root / 'yield.json')
+        self.assertEqual(view.returncode, 0, view.stdout + view.stderr)
+        self.assertIn(base64.b64encode(names[2]), view.stdout)
+        for name in long_names:
+            self.assertIn(name, view.stdout)
+        self.assertEqual(self.snapshot(), state)
         self.assertEqual(self.snapshot(self.repo), before)
 
     def test_invalid_report_processes_never_yield(self):
